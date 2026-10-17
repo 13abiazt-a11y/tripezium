@@ -127,3 +127,28 @@
     @apply font-sans;
     }
 }
+
+/* Splash screen (components/splash.tsx) */
+@keyframes tz-pop {
+  from { opacity: 0; transform: scale(0.55) rotate(-10deg); }
+  60% { opacity: 1; transform: scale(1.06) rotate(2deg); }
+  to { opacity: 1; transform: scale(1) rotate(0); }
+}
+@keyframes tz-rise {
+  from { opacity: 0; transform: translateY(14px); }
+  to { opacity: 1; transform: none; }
+}
+@keyframes tz-fade {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+@keyframes tz-load {
+  from { transform: translateX(-100%); }
+  to { transform: none; }
+}
+@keyframes tz-exit {
+  to { transform: translateY(-100%); }
+}
+@media (prefers-reduced-motion: reduce) {
+  .tz-anim { animation-duration: 1ms !important; animation-delay: 0s !important; }
+}

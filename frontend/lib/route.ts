@@ -1,6 +1,6 @@
 // Turns the picked countries/cities into a travel route with a recommended
 // number of days per city. Pure functions, no React.
-import { countryName, isBigCity } from "./destinations"
+import { countryName, isBigCity, suggestedCities } from "./destinations"
 import type { CountryStop, RouteStop, Trip } from "./types"
 
 const DAY = 86_400_000
@@ -21,13 +21,29 @@ export function newId() {
   return Math.random().toString(36).slice(2, 10)
 }
 
+/**
+ * One place on the route: a city the user picked, or a whole country when they
+ * picked no city (we then plan its most popular cities, so they can research).
+ */
+export type Leg = { id: string; name: string; country: string; explore: boolean; startDate?: string; endDate?: string }
+
+export function legsOf(stops: CountryStop[]): Leg[] {
+  return stops
+    .filter((s) => s.country)
+    .flatMap((s): Leg[] =>
+      s.cities.length
+        ? s.cities.map((c) => ({ id: c.id, name: c.name, country: s.country, explore: false, startDate: c.startDate, endDate: c.endDate }))
+        : [{ id: s.id, name: countryName(s.country), country: s.country, explore: true }],
+    )
+}
+
 /** "Paris" · "Paris & Lyon" · "France & Italy" · "France, Italy & Spain" */
 export function summarise(stops: CountryStop[]) {
-  const filled = stops.filter((s) => s.cities.length)
+  const filled = stops.filter((s) => s.country)
   const list = (xs: string[]) => (xs.length <= 1 ? (xs[0] ?? "") : `${xs.slice(0, -1).join(", ")} & ${xs.at(-1)}`)
   if (filled.length === 1) {
     const cities = filled[0].cities.map((c) => c.name)
-    return cities.length <= 2 ? list(cities) : countryName(filled[0].country)
+    return cities.length && cities.length <= 2 ? list(cities) : countryName(filled[0].country)
   }
   return list(filled.map((s) => countryName(s.country)))
 }
@@ -52,35 +68,35 @@ function split(total: number, weights: number[]) {
 
 /** Recommended route: grouped by country in the order picked, dated cities sorted by date. */
 export function recommendRoute(trip: Pick<Trip, "stops" | "startDate" | "endDate" | "datesPerCity">): RouteStop[] {
-  const legs = trip.stops.flatMap((s) =>
-    s.cities.map((c) => ({ city: c, country: s.country })),
-  )
+  const legs = legsOf(trip.stops)
   const total = daysBetween(trip.startDate, trip.endDate)
 
   const fixed = new Map<string, number>()
   if (trip.datesPerCity) {
-    for (const { city } of legs) {
-      const d = daysBetween(city.startDate ?? "", city.endDate ?? "")
-      if (d) fixed.set(city.id, d)
+    for (const l of legs) {
+      const d = l.explore ? 0 : daysBetween(l.startDate ?? "", l.endDate ?? "")
+      if (d) fixed.set(l.id, d)
     }
   }
   const usedByFixed = [...fixed.values()].reduce((a, b) => a + b, 0)
-  const flexible = legs.filter((l) => !fixed.has(l.city.id))
+  const flexible = legs.filter((l) => !fixed.has(l.id))
   const shares = split(
     Math.max(flexible.length, total - usedByFixed),
-    flexible.map((l) => (isBigCity(l.country, l.city.name) ? 1.5 : 1)),
+    // A whole country to explore gets the most time, then big cities.
+    flexible.map((l) => (l.explore ? 2 : isBigCity(l.country, l.name) ? 1.5 : 1)),
   )
-  const flexDays = new Map(flexible.map((l, i) => [l.city.id, shares[i]]))
+  const flexDays = new Map(flexible.map((l, i) => [l.id, shares[i]]))
 
-  const route = legs.map((l) => ({
-    cityId: l.city.id,
-    city: l.city.name,
+  const route: RouteStop[] = legs.map((l) => ({
+    cityId: l.id,
+    city: l.name,
     country: l.country,
-    days: fixed.get(l.city.id) ?? flexDays.get(l.city.id) ?? 1,
+    days: fixed.get(l.id) ?? flexDays.get(l.id) ?? 1,
+    ...(l.explore ? { explore: true } : {}),
   }))
 
   if (trip.datesPerCity) {
-    const start = new Map(legs.map((l) => [l.city.id, l.city.startDate || "9999"]))
+    const start = new Map(legs.map((l) => [l.id, l.startDate || "9999"]))
     route.sort((a, b) => start.get(a.cityId)!.localeCompare(start.get(b.cityId)!))
   }
   return route
@@ -92,7 +108,7 @@ export function recommendRoute(trip: Pick<Trip, "stops" | "startDate" | "endDate
  */
 export function syncRoute(trip: Trip, previous: Trip): RouteStop[] {
   const ids = (r: RouteStop[]) => r.map((x) => x.cityId).sort().join()
-  const cityIds = trip.stops.flatMap((s) => s.cities.map((c) => c.id)).sort().join()
+  const cityIds = legsOf(trip.stops).map((l) => l.id).sort().join()
   const sameShape =
     previous.route.length > 0 &&
     ids(previous.route) === cityIds &&
@@ -103,15 +119,45 @@ export function syncRoute(trip: Trip, previous: Trip): RouteStop[] {
   return sameShape ? previous.route : recommendRoute(trip)
 }
 
-export type PlannedDay = { date: string; city: string; country: string; dayInCity: number; daysInCity: number }
+export type PlannedDay = {
+  date: string
+  city: string
+  country: string
+  dayInCity: number
+  daysInCity: number
+  explore?: boolean // city was suggested by us because the user only picked the country
+}
+
+/**
+ * For a country with no city picked, choose its most popular cities to fill
+ * `days`: about one city per 2–3 days, at most 4, big cities get a bit longer.
+ */
+export function suggestCitiesFor(country: string, days: number) {
+  const cities = suggestedCities(country)
+  if (!cities.length) return [{ city: countryName(country), days }]
+  const k = Math.min(cities.length, 4, Math.max(1, Math.round(days / 2.5)))
+  const picks = cities.slice(0, k)
+  const shares = split(days, picks.map((c) => (isBigCity(country, c) ? 1.5 : 1)))
+  return picks.map((city, i) => ({ city, days: shares[i] }))
+}
 
 /** Expand the route into dated days, starting from the trip start date. */
 export function planDays(startDate: string, route: RouteStop[]): PlannedDay[] {
   const out: PlannedDay[] = []
   let i = 0
   for (const leg of route) {
-    for (let d = 0; d < leg.days; d++) {
-      out.push({ date: addDays(startDate, i++), city: leg.city, country: leg.country, dayInCity: d + 1, daysInCity: leg.days })
+    const parts = leg.explore ? suggestCitiesFor(leg.country, leg.days) : [{ city: leg.city, days: leg.days }]
+    for (const part of parts) {
+      for (let d = 0; d < part.days; d++) {
+        out.push({
+          date: addDays(startDate, i++),
+          city: part.city,
+          country: leg.country,
+          dayInCity: d + 1,
+          daysInCity: part.days,
+          ...(leg.explore ? { explore: true } : {}),
+        })
+      }
     }
   }
   return out

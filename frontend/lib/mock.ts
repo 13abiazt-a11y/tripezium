@@ -13,6 +13,7 @@ export const mockTrip: Trip = {
   dayEnd: "21:00",
   travellers: 2,
   interests: ["food", "temples", "nightlife"],
+  budget: { amount: 1500, currency: "GBP" },
 }
 
 export const mockPlaces: Place[] = [
@@ -32,26 +33,26 @@ export const mockItinerary: ItineraryDay[] = [
   {
     date: "2026-12-01",
     items: [
-      { time: "09:00", placeId: "p1", durationMins: 90, note: "Start here" },
-      { time: "10:30", placeId: "p2", durationMins: 60 },
-      { time: "13:00", placeId: "p3", durationMins: 120 },
-      { time: "19:00", placeId: "p4", durationMins: 90, note: "Dinner" },
+      { time: "09:00", placeId: "p1", durationMins: 90, note: "Start here", cost: { amount: 0, currency: "JPY" } },
+      { time: "10:30", placeId: "p2", durationMins: 60, cost: { amount: 1500, currency: "JPY" } },
+      { time: "13:00", placeId: "p3", durationMins: 120, cost: { amount: 3100, currency: "JPY" } },
+      { time: "19:00", placeId: "p4", durationMins: 90, note: "Dinner", cost: { amount: 4000, currency: "JPY" } },
     ],
   },
   {
     date: "2026-12-02",
     items: [
-      { time: "09:00", placeId: "p5", durationMins: 90 },
-      { time: "11:00", placeId: "p6", durationMins: 90 },
-      { time: "15:00", placeId: "p7", durationMins: 60 },
-      { time: "20:00", placeId: "p8", durationMins: 120, note: "Drinks" },
+      { time: "09:00", placeId: "p5", durationMins: 90, cost: { amount: 0, currency: "JPY" } },
+      { time: "11:00", placeId: "p6", durationMins: 90, cost: { amount: 2000, currency: "JPY" } },
+      { time: "15:00", placeId: "p7", durationMins: 60, cost: { amount: 0, currency: "JPY" } },
+      { time: "20:00", placeId: "p8", durationMins: 120, note: "Drinks", cost: { amount: 3500, currency: "JPY" } },
     ],
   },
   {
     date: "2026-12-03",
     items: [
-      { time: "09:00", placeId: "p9", durationMins: 120, note: "Breakfast" },
-      { time: "13:00", placeId: "p10", durationMins: 150 },
+      { time: "09:00", placeId: "p9", durationMins: 120, note: "Breakfast", cost: { amount: 2500, currency: "JPY" } },
+      { time: "13:00", placeId: "p10", durationMins: 150, cost: { amount: 3800, currency: "JPY" } },
     ],
   },
 ]

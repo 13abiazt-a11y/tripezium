@@ -1,12 +1,15 @@
 "use client"
 
 import { useEffect, useMemo, useState } from "react"
-import { Clock, Lightbulb, MapPin } from "lucide-react"
+import { Clock, Compass, Lightbulb, MapPin, Wallet } from "lucide-react"
 
 import { Badge } from "@/components/ui/badge"
 import { PageShell } from "@/components/page-shell"
 import { RouteEditor } from "@/components/route-editor"
-import { flagOf } from "@/lib/destinations"
+import { countryName, flagOf } from "@/lib/destinations"
+import { SHOW_COSTS } from "@/lib/flags"
+import { formatMoney, totals } from "@/lib/money"
+import { sampleDay } from "@/lib/sample-day"
 import { mockItinerary, mockPlaces, mockTrip } from "@/lib/mock"
 import { addDays, daysBetween, planDays, recommendRoute } from "@/lib/route"
 import { loadTrip, saveTrip } from "@/lib/trip-store"
@@ -47,9 +50,14 @@ export default function ItineraryPage() {
   const activeIndex = Math.min(active, Math.max(0, days.length - 1))
   const day = days[activeIndex]
 
-  // Mock activities only exist for Tokyo; other cities wait for C's itinerary endpoint.
+  // Real-looking mock activities only exist for Tokyo; every other city gets a
+  // sample day until C's itinerary endpoint is live.
   const tokyoDays = days.filter((d) => d.city === "Tokyo").map((d) => d.date)
-  const items: ItineraryItem[] = day && day.city === "Tokyo" ? (mockItinerary[tokyoDays.indexOf(day.date)]?.items ?? []) : []
+  const tokyoItems = day && day.city === "Tokyo" ? mockItinerary[tokyoDays.indexOf(day.date)]?.items : undefined
+  const sample = day && !tokyoItems ? sampleDay(day.city, day.dayInCity, trip.budget.currency) : null
+  const items: ItineraryItem[] = tokyoItems ?? sample?.items ?? []
+  const lookup = (id: string) => places.get(id) ?? sample?.places.find((p) => p.id === id)
+  const dayTotals = totals(items.map((i) => i.cost))
 
   return (
     <PageShell
@@ -102,13 +110,31 @@ export default function ItineraryPage() {
       {day ? (
         <p className="mb-3 text-sm text-muted-foreground">
           {day.city} · day {day.dayInCity} of {day.daysInCity}
+          {sample ? " · sample plan" : ""}
+        </p>
+      ) : null}
+
+      {day?.explore ? (
+        <div className="mb-3 flex items-start gap-2 rounded-xl bg-secondary p-3 text-sm text-secondary-foreground">
+          <Compass className="mt-0.5 size-4 shrink-0 text-primary" />
+          <p>
+            You’re exploring <span className="font-medium">{countryName(day.country)}</span>. We picked{" "}
+            <span className="font-medium">{day.city}</span>, one of its most popular cities. Like it? Add it as a city on
+            the first screen to plan around it.
+          </p>
+        </div>
+      ) : null}
+
+      {SHOW_COSTS && dayTotals.length ? (
+        <p className="mb-3 inline-flex items-center gap-1.5 text-sm font-medium">
+          <Wallet className="size-4 text-primary" /> About {dayTotals.map(formatMoney).join(" + ")} per person today
         </p>
       ) : null}
 
       {items.length ? (
         <ol className="relative flex flex-col gap-3 border-l border-border pl-5">
           {items.map((item) => {
-            const p = places.get(item.placeId)
+            const p = lookup(item.placeId)
             return (
               <li key={item.time + item.placeId} className="relative">
                 <span className="absolute top-4 -left-[26px] size-3 rounded-full border-2 border-background bg-primary" />
@@ -124,6 +150,11 @@ export default function ItineraryPage() {
                   <div className="mt-2 flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-muted-foreground">
                     <span className="inline-flex items-center gap-1"><Clock className="size-3.5" />{formatDuration(item.durationMins)}</span>
                     {item.note ? <span>{item.note}</span> : null}
+                    {SHOW_COSTS && item.cost ? (
+                      <span className="font-medium text-foreground">
+                        {item.cost.amount === 0 ? "Free" : `~${formatMoney(item.cost)}`}
+                      </span>
+                    ) : null}
                   </div>
                   {p?.tip ? (
                     <p className="mt-2 flex items-start gap-1.5 rounded-lg bg-muted px-2 py-1.5 text-xs">

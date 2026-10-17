@@ -3,12 +3,12 @@
 // "Been"-style picker: choose a country, tap the cities you're visiting,
 // then add another country section and repeat. Order doesn't matter here —
 // travel order is decided later on the itinerary page.
-import { useState } from "react"
+import { useEffect, useState } from "react"
 import { Check, Plus, Search, X } from "lucide-react"
 
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
-import { countryName, flagOf, POPULAR, searchCountries, suggestedCities } from "@/lib/destinations"
+import { countryName, flagOf, loadCities, POPULAR, searchCities, searchCountries, suggestedCities } from "@/lib/destinations"
 import { newId } from "@/lib/route"
 import type { CityStop, CountryStop } from "@/lib/types"
 
@@ -36,7 +36,8 @@ export function DestinationPicker({
   const remove = (id: string) => onChange(sections.filter((s) => s.id !== id))
   const add = () => onChange([...sections, { id: newId(), country: "", cities: [] }])
 
-  const canAdd = sections.every((s) => s.country && s.cities.length)
+  // A country with no city is fine: we'll suggest its most popular cities.
+  const canAdd = sections.every((s) => s.country)
 
   return (
     <div className="flex flex-col gap-3">
@@ -141,15 +142,19 @@ function CountrySection({
         })}
       </div>
 
-      <AddCity
+      {!stop.cities.length ? (
+        <p className="mt-3 rounded-lg bg-secondary px-3 py-2 text-xs text-secondary-foreground">
+          Not sure where yet? Leave it blank and we’ll plan {countryName(stop.country)}’s most popular places, so you can
+          see what each city is like before you pick.
+        </p>
+      ) : null}
+
+      <CitySearch
+        country={stop.country}
         hasSuggestions={suggestions.length > 0}
+        exclude={[...picked]}
         onAdd={(name) => {
-          const existing = [...suggestions, ...stop.cities.map((c) => c.name)].find(
-            (c) => c.toLowerCase() === name.toLowerCase(),
-          )
-          if (existing) {
-            if (!picked.has(existing)) toggle(existing)
-          } else onChange({ cities: [...stop.cities, { id: newId(), name }] })
+          if (!picked.has(name)) toggle(name)
         }}
       />
 
@@ -276,32 +281,103 @@ function CountrySearch({
   )
 }
 
-function AddCity({ onAdd, hasSuggestions }: { onAdd: (name: string) => void; hasSuggestions: boolean }) {
-  const [name, setName] = useState("")
-  const submit = () => {
-    const n = name.trim()
-    if (n) onAdd(n)
-    setName("")
+/**
+ * Type-ahead for cities in one country. Only real places from the country's
+ * list can be added (no made-up cities): pick from the dropdown, or press Enter
+ * for the top match.
+ */
+function CitySearch({
+  country,
+  hasSuggestions,
+  exclude,
+  onAdd,
+}: {
+  country: string
+  hasSuggestions: boolean
+  exclude: string[]
+  onAdd: (name: string) => void
+}) {
+  const [q, setQ] = useState("")
+  const [names, setNames] = useState<string[] | null>(null)
+  const [active, setActive] = useState(0)
+
+  useEffect(() => {
+    let live = true
+    loadCities(country).then((list) => live && setNames(list))
+    return () => {
+      live = false
+    }
+  }, [country])
+
+  const results = names ? searchCities(names, q, exclude) : []
+  const pick = (name: string) => {
+    onAdd(name)
+    setQ("")
+    setActive(0)
   }
+  const listId = `cities-${country}`
+
   return (
-    <div className="mt-3 flex gap-2">
-      <Input
-        placeholder={hasSuggestions ? "Somewhere else? Type a city" : "Type a city"}
-        aria-label="Add a city"
-        autoComplete="off"
-        className="h-9"
-        value={name}
-        onChange={(e) => setName(e.target.value)}
-        onKeyDown={(e) => {
-          if (e.key === "Enter") {
-            e.preventDefault()
-            submit()
-          }
-        }}
-      />
-      <Button type="button" variant="outline" className="h-9" disabled={!name.trim()} onClick={submit}>
-        Add
-      </Button>
+    <div className="mt-3">
+      <div className="relative">
+        <Search className="pointer-events-none absolute top-1/2 left-3 size-4 -translate-y-1/2 text-muted-foreground" />
+        <Input
+          role="combobox"
+          aria-expanded={!!q && results.length > 0}
+          aria-controls={listId}
+          aria-autocomplete="list"
+          aria-label={`Search cities in ${countryName(country)}`}
+          placeholder={hasSuggestions ? "Somewhere else? Search a city" : "Search a city"}
+          autoComplete="off"
+          className="h-11 pl-9"
+          value={q}
+          onChange={(e) => {
+            setQ(e.target.value)
+            setActive(0)
+          }}
+          onKeyDown={(e) => {
+            if (e.key === "ArrowDown") {
+              e.preventDefault()
+              setActive((a) => Math.min(a + 1, results.length - 1))
+            } else if (e.key === "ArrowUp") {
+              e.preventDefault()
+              setActive((a) => Math.max(a - 1, 0))
+            } else if (e.key === "Enter") {
+              e.preventDefault()
+              if (results[active]) pick(results[active])
+            } else if (e.key === "Escape") setQ("")
+          }}
+        />
+      </div>
+
+      {q.trim() ? (
+        names === null ? (
+          <p className="px-2 py-2 text-sm text-muted-foreground">Loading cities…</p>
+        ) : results.length ? (
+          <ul id={listId} role="listbox" aria-label={`Cities in ${countryName(country)}`} className="mt-1 flex flex-col">
+            {results.map((name, i) => (
+              <li key={name}>
+                <button
+                  type="button"
+                  role="option"
+                  aria-selected={i === active}
+                  onClick={() => pick(name)}
+                  className={`flex min-h-11 w-full items-center gap-2 rounded-lg px-3 text-left text-sm font-medium ${
+                    i === active ? "bg-muted" : "hover:bg-muted"
+                  }`}
+                >
+                  <Plus className="size-4 text-primary" />
+                  {name}
+                </button>
+              </li>
+            ))}
+          </ul>
+        ) : (
+          <p className="px-2 py-2 text-sm text-muted-foreground">
+            No place called “{q.trim()}” in {countryName(country)}. Check the spelling, or try a bigger town nearby.
+          </p>
+        )
+      ) : null}
     </div>
   )
 }

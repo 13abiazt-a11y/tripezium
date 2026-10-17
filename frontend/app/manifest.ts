@@ -2,13 +2,16 @@ import type { MetadataRoute } from "next"
 
 export default function manifest(): MetadataRoute.Manifest {
   return {
-    name: "Trip Planner",
-    short_name: "Trip Planner",
-    description: "Turn travel videos into a day-by-day itinerary.",
+    name: "Tripezium",
+    short_name: "Tripezium",
+    description: "Plan multi-city trips without the money headache.",
     start_url: "/",
     display: "standalone",
-    background_color: "#ffffff",
-    theme_color: "#ffffff",
-    icons: [{ src: "/favicon.ico", sizes: "any", type: "image/x-icon" }],
+    background_color: "#f6faf7",
+    theme_color: "#f6faf7",
+    icons: [
+      { src: "/icon.png", sizes: "512x512", type: "image/png" },
+      { src: "/favicon.ico", sizes: "any", type: "image/x-icon" },
+    ],
   }
 }

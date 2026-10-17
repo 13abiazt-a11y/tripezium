@@ -22,6 +22,12 @@ export type RouteStop = {
   city: string
   country: string // ISO alpha-2
   days: number
+  explore?: boolean // whole country, no city picked: we suggest its most popular cities
+}
+
+export type Money = {
+  amount: number
+  currency: string // ISO 4217, e.g. "GBP"
 }
 
 export type Trip = {
@@ -36,6 +42,7 @@ export type Trip = {
   dayEnd: string // HH:mm
   travellers: number
   interests: string[]
+  budget: { amount: number | null; currency: string } // whole trip, all travellers; amount null = not set
 }
 
 export type Place = {
@@ -56,6 +63,7 @@ export type ItineraryItem = {
   placeId: string
   durationMins: number
   note?: string
+  cost?: Money // estimated cost per person. Hidden in the UI until SHOW_COSTS is on (lib/flags.ts)
 }
 
 export type ItineraryDay = {

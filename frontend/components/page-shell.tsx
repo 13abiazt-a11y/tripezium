@@ -1,6 +1,8 @@
 import Link from "next/link"
 import { ChevronLeft } from "lucide-react"
 
+import { Brand } from "@/components/brand"
+
 const STEPS = ["Trip", "Interests", "Videos", "Itinerary"]
 
 export function PageShell({
@@ -21,6 +23,9 @@ export function PageShell({
   return (
     <div className="mx-auto flex min-h-svh w-full max-w-md flex-col px-4 pt-4 pb-6">
       <header className="mb-6">
+        <div className="mb-4">
+          <Brand />
+        </div>
         <div className="mb-4 flex h-8 items-center gap-2">
           {back ? (
             <Link href={back} aria-label="Back" className="-ml-2 rounded-lg p-1.5 hover:bg-muted">

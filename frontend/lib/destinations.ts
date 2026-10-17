@@ -97,6 +97,41 @@ export function searchCountries(query: string, exclude: string[] = [], limit = 6
   return [...starts, ...contains].slice(0, limit)
 }
 
+// Real city names per country (GeoNames via all-the-cities, population ≥ 1,000,
+// most populous first, plus the suggested places above). One small file per
+// country in public/cities/, fetched only when that country is picked.
+const cityLists = new Map<string, Promise<string[]>>()
+
+export function loadCities(code: string): Promise<string[]> {
+  let p = cityLists.get(code)
+  if (!p) {
+    p = fetch(`/cities/${code}.json`)
+      .then((r) => (r.ok ? r.json() : []))
+      .catch(() => [])
+    cityLists.set(code, p)
+  }
+  return p
+}
+
+/** Best matches first: name starts with the query, then a word starts with it, then contains it. */
+export function searchCities(names: string[], query: string, exclude: string[] = [], limit = 6): string[] {
+  const q = norm(query)
+  if (!q) return []
+  const skip = new Set(exclude.map(norm))
+  const starts: string[] = []
+  const word: string[] = []
+  const contains: string[] = []
+  for (const name of names) {
+    const n = norm(name)
+    if (skip.has(n)) continue
+    if (n.startsWith(q)) starts.push(name)
+    else if (n.includes(" " + q) || n.includes("-" + q)) word.push(name)
+    else if (q.length >= 3 && n.includes(q)) contains.push(name)
+    if (starts.length >= limit) break
+  }
+  return [...starts, ...word, ...contains].slice(0, limit)
+}
+
 export function suggestedCities(code: string): string[] {
   return (CITIES[code] ?? []).map((c) => c.replace(/^\*/, ""))
 }

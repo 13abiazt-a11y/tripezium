@@ -16,6 +16,7 @@ export const emptyTrip: Trip = {
   dayEnd: "21:00",
   travellers: 1,
   interests: [],
+  budget: { amount: null, currency: "GBP" },
 }
 
 export function loadTrip(): Trip {
@@ -26,6 +27,7 @@ export function loadTrip(): Trip {
     // Drafts saved before the multi-city picker existed have no stops/route.
     if (!Array.isArray(trip.stops)) trip.stops = []
     if (!Array.isArray(trip.route)) trip.route = []
+    if (!trip.budget || typeof trip.budget !== "object") trip.budget = emptyTrip.budget
     return trip
   } catch {
     return emptyTrip

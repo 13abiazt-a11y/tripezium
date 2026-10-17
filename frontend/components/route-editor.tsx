@@ -125,7 +125,10 @@ export function RouteEditor({
               <span className="text-lg leading-none" aria-hidden>
                 {flagOf(r.country)}
               </span>
-              <span className="min-w-0 flex-1 truncate text-sm font-medium">{r.city}</span>
+              <span className="min-w-0 flex-1 truncate text-sm font-medium">
+                {r.city}
+                {r.explore ? <span className="ml-1.5 text-xs font-normal text-muted-foreground">· top cities</span> : null}
+              </span>
               <div className="flex items-center gap-1">
                 <Button type="button" variant="outline" size="icon" aria-label={`One day less in ${r.city}`} disabled={r.days <= 1} onClick={() => setDays(i, r.days - 1)}>
                   <Minus />
