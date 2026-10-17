@@ -61,6 +61,9 @@ class PlaceIn(CamelModel):
     source_url: str | None = None
     timestamp: str | None = None
     tip: str | None = None
+    # Importer-internal geocoding hints (e.g. "Asakusa", "Tokyo"). Never serialised, not in the contract.
+    area: str | None = Field(None, exclude=True)
+    city: str | None = Field(None, exclude=True)
 
 
 class Place(PlaceIn):
@@ -99,6 +102,32 @@ class Itinerary(CamelModel):
     days: list[ItineraryDay]
     trip_total_home: float
     home_currency: str = Field(pattern=CURRENCY)
+
+
+# --- Imports ------------------------------------------------------------
+
+ImportStatus = Literal["pending", "running", "done", "failed"]
+
+
+class ImportCreate(CamelModel):
+    link: str = Field(min_length=1, max_length=2000)
+    trip_id: str | None = None  # gives Gemini the destination as context
+
+
+class ImportTextCreate(CamelModel):
+    text: str = Field(min_length=1, max_length=10_000)
+    trip_id: str | None = None
+    source_url: str | None = Field(None, max_length=2000)  # where the text came from, if known
+
+
+class ImportJob(CamelModel):
+    job_id: str
+    status: ImportStatus
+    platform: str  # youtube | tiktok | text | screenshot
+    link: str | None = None
+    places: list[Place] = Field(default_factory=list)
+    error: str | None = None  # error code when status == "failed"
+    message: str | None = None  # human-readable, safe to show the user (also set on some "done" jobs)
 
 
 # --- Misc ---------------------------------------------------------------
