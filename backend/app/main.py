@@ -15,6 +15,7 @@ app = FastAPI(title="IKU Trip Planner API", version="0.1.0")
 app.add_middleware(
     CORSMiddleware,
     allow_origins=get_settings().cors_origins,
+    allow_origin_regex=get_settings().frontend_origin_regex or None,
     allow_methods=["*"],
     allow_headers=["*"],
 )
