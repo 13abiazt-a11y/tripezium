@@ -27,6 +27,8 @@ class TripRow(Base):
     travellers: Mapped[int] = mapped_column(Integer, default=1)
     interests: Mapped[list[str]] = mapped_column(ARRAY(Text), default=list)
     home_currency: Mapped[str] = mapped_column(Text, default="GBP")
+    # [{"city", "country", "days", "currency"}] in travel order; [] = single destination
+    route: Mapped[list[dict[str, Any]]] = mapped_column(JSONB, default=list)
     created_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
 

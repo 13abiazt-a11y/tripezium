@@ -14,7 +14,7 @@ from ..db import _session_factory
 from ..errors import ApiError, not_found
 from ..ids import new_id
 from ..schemas import ImportCreate, ImportJob, ImportTextCreate, Place, PlaceIn
-from ..services import import_cache, video_import
+from ..services import import_cache, route, video_import
 from .trips import get_trip_or_404
 
 log = logging.getLogger("app.imports")
@@ -50,7 +50,8 @@ def _update(job_id: str, **changes) -> None:
         JOBS[job_id] = JOBS[job_id].model_copy(update=changes)
 
 
-def _run(job_id: str, prepare: Prepare, destination: str | None, country_code: str | None) -> None:
+def _run(job_id: str, prepare: Prepare, destination: str | None, cities: list[str],
+         country_code: str | None) -> None:
     _update(job_id, status="running")
     try:
         cache_key, extract, message = prepare()  # may hit the network (e.g. TikTok short links)
@@ -58,7 +59,7 @@ def _run(job_id: str, prepare: Prepare, destination: str | None, country_code: s
         if places is None:
             places = extract()
             import_cache.put_places(cache_key, places)  # raw Gemini output; geocoding is cached per query
-        places = video_import.geocode_places(places, destination, country_code)
+        places = video_import.geocode_places(places, cities, country_code)
     except ApiError as exc:
         _update(job_id, status="failed", error=exc.code, message=exc.message)
         return
@@ -74,17 +75,19 @@ def _run(job_id: str, prepare: Prepare, destination: str | None, country_code: s
     _update(job_id, status="done", places=_with_ids(places), message=message)
 
 
-def _trip_context(trip_id: str | None) -> tuple[str | None, str | None]:
-    """(destination, country code) for the trip. Only touches the DB when a tripId is sent."""
+def _trip_context(trip_id: str | None) -> tuple[str | None, list[str], str | None]:
+    """(destination for Gemini, e.g. "Paris, Lyon and Rome"; the trip's cities; its country if there's
+    only one). Only touches the DB when a tripId is sent."""
     if not trip_id:
-        return None, None
+        return None, [], None
     with _session_factory()() as db:
         trip = get_trip_or_404(db, trip_id)
-        return trip.destination, trip.country_code
+        cities = route.cities(trip)
+        return route.describe(cities), cities, route.single_country(trip)
 
 
 def _start(background: BackgroundTasks, platform: str, link: str | None, prepare: Prepare,
-           trip: tuple[str | None, str | None]) -> ImportJob:
+           trip: tuple[str | None, list[str], str | None]) -> ImportJob:
     job = ImportJob(job_id=new_id("j"), status="pending", platform=platform, link=link)
     with _lock:
         JOBS[job.job_id] = job

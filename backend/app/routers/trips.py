@@ -7,8 +7,8 @@ from ..db import get_db
 from ..errors import not_found
 from ..ids import new_id
 from ..models import TripRow
-from ..schemas import Trip, TripCreate
-from ..services.geo import resolve_destination
+from ..schemas import RouteLeg, Trip, TripCreate
+from ..services.geo import currency_for, resolve_destination
 
 router = APIRouter(prefix="/trips", tags=["trips"])
 
@@ -24,6 +24,7 @@ def trip_out(row: TripRow) -> Trip:
         travellers=row.travellers,
         interests=list(row.interests),
         home_currency=row.home_currency,
+        route=[RouteLeg(city=r["city"], country=r["country"], days=r["days"]) for r in row.route or []],
     )
 
 
@@ -36,7 +37,13 @@ def get_trip_or_404(db: Session, trip_id: str) -> TripRow:
 
 @router.post("", response_model=Trip, status_code=201)
 def create_trip(body: TripCreate, db: Session = Depends(get_db)) -> Trip:
-    country_code, local_currency = resolve_destination(body.destination)
+    if body.route:
+        # Countries come from the route, so no Nominatim lookup; each leg gets its own currency.
+        route = [{**leg.model_dump(), "currency": currency_for(leg.country)} for leg in body.route]
+        country_code, local_currency = route[0]["country"], route[0]["currency"]  # first leg, for older code
+    else:
+        route = []
+        country_code, local_currency = resolve_destination(body.destination)
     row = TripRow(
         id=new_id("t"),
         destination=body.destination,
@@ -49,6 +56,7 @@ def create_trip(body: TripCreate, db: Session = Depends(get_db)) -> Trip:
         travellers=body.travellers,
         interests=body.interests,
         home_currency=body.home_currency,
+        route=route,
     )
     db.add(row)
     db.commit()

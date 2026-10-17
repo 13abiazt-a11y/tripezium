@@ -277,12 +277,15 @@ def extract_places_from_tiktok(url: str, destination: str | None = None) -> list
 FAR_KM = 150  # further than this from the destination centre -> probably a wrong match (or a day trip)
 
 
-def geocode_places(places: list[PlaceIn], destination: str | None,
+def geocode_places(places: list[PlaceIn], destination: str | list[str] | None,
                    country_code: str | None = None) -> list[PlaceIn]:
-    """Fill lat/lng using the destination as context. Places that can't be found keep lat/lng
-    None and get their confidence halved, so the review screen can flag them."""
-    centre = geo.geocode(destination) if destination else None
-    country_code = country_code or (centre or {}).get("country_code")
+    """Fill lat/lng using the trip's city (or cities, on a multi-city trip) as context. Places that
+    can't be found keep lat/lng None and get their confidence halved, so the review screen can flag them."""
+    trip_cities = [destination] if isinstance(destination, str) else list(destination or [])
+    centres = [c for c in (geo.geocode(x) for x in trip_cities) if c]
+    if not country_code and len(trip_cities) == 1 and centres:
+        country_code = centres[0].get("country_code")
+    only_city = trip_cities[0] if len(trip_cities) == 1 else None
 
     out = []
     for p in places:
@@ -290,7 +293,7 @@ def geocode_places(places: list[PlaceIn], destination: str | None,
         # Most specific first: "Nakamise, Tokyo" alone matches a different Nakamise 40 km away.
         # Use the place's own city: a Tokyo trip's video can include Osaka, and "Dotonbori, Tokyo"
         # finds the wrong thing. The distance check below then lowers confidence for far places.
-        city = p.city or destination
+        city = p.city or only_city
         queries = [", ".join(x for x in (n, p.area, city) if x) for n in names]
         queries += [f"{n}, {city}" for n in names if city] + names
         hit = None
@@ -303,12 +306,12 @@ def geocode_places(places: list[PlaceIn], destination: str | None,
         if not hit:
             out.append(p.model_copy(update={"confidence": round(conf * 0.5, 2)}))
             continue
-        if centre and geo.distance_km(centre["lat"], centre["lng"], hit["lat"], hit["lng"]) > FAR_KM:
+        if centres and min(geo.distance_km(c["lat"], c["lng"], hit["lat"], hit["lng"]) for c in centres) > FAR_KM:
             conf *= 0.5
         out.append(p.model_copy(update={"lat": hit["lat"], "lng": hit["lng"], "confidence": round(conf, 2)}))
 
     found = sum(1 for p in out if p.lat is not None)
-    log.info("geocoded %d/%d places (destination=%r, country=%s)", found, len(out), destination, country_code)
+    log.info("geocoded %d/%d places (cities=%r, country=%s)", found, len(out), trip_cities, country_code)
     return out
 
 

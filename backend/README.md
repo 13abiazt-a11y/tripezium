@@ -64,17 +64,51 @@ Tests: `python -m pytest -q` (API tests run against the DB in `DATABASE_URL` and
 
 The password in `DATABASE_URL` can contain special characters like `@`; the app percent-encodes it.
 
+## Deploy (Vultr)
+
+Ubuntu 24.04 VM. Uvicorn runs under **systemd** on `127.0.0.1:8000`; **Caddy** is the public entry point
+and gets/renews the HTTPS certificate automatically. No Docker: one Python service and one web server,
+nothing to build. Everything is in `backend/deploy/`.
+
+**One-time setup**
+1. Vultr: Ubuntu 24.04, London, add your SSH public key. Firewall group: allow TCP **22**, **80**, **443**.
+2. DNS (GoDaddy): `A` record `api` -> the server's IP.
+3. From the repo root on your machine (replace the IP and domain):
+   ```bash
+   scp backend/.env root@<IP>:/root/iku.env
+   ssh root@<IP> "curl -fsSL https://raw.githubusercontent.com/dnagasundhar-png/IKU_Trip_Planner/backend-m1/backend/deploy/setup.sh -o /root/setup.sh && bash /root/setup.sh api.<domain>"
+   ```
+   Without a domain yet, run `bash /root/setup.sh` (no argument): plain HTTP by IP, for testing only.
+   Browsers block calls from the HTTPS front end to an HTTP API.
+
+**Redeploy after pushing new code:** `ssh root@<IP> "bash /root/setup.sh api.<domain>"`
+(pulls the branch, reinstalls deps, applies the schema, restarts). Use `BRANCH=main bash ...` after merging.
+
+**Change a secret:** edit `backend/.env` locally, `scp` it to `/root/iku.env` again, re-run setup.
+
+**Logs:** `ssh root@<IP> journalctl -u iku-api -f` · status: `systemctl status iku-api caddy`
+
 ## Endpoints
 
 | Method + path | Notes |
 |---|---|
 | `GET /health` | `{ "status": "ok", "db": "ok" }`, or 503 with `"status": "degraded"` if the DB is unreachable |
-| `POST /trips` | Body: Trip without `id`. Returns 201 + full Trip. Resolves country + currency via Nominatim |
+| `POST /trips` | Body: Trip without `id`, optionally with a multi-city `route` (below). Returns 201 + full Trip. Without a route, resolves country + currency via Nominatim |
 | `GET /trips/{id}` | Returns Trip |
 | `GET /trips/{id}/places` | `{ "places": [Place] }`: imported places first, then stops Gemini added. Use it to turn itinerary `placeId`s into names and map pins (re-fetch after each generation) |
 | `POST /trips/{id}/places` | Body `{ "places": [Place] }`. Missing `id`s are assigned. Returns `{ "places": [Place] }` |
 | `POST /trips/{id}/itinerary` | Generates (or regenerates) and stores the itinerary with Gemini. **Takes ~20-30s**: show a loading state. 502 `generation_failed` if Gemini fails twice |
 | `GET /trips/{id}/itinerary` | Returns the stored itinerary (fast). 404 `no_itinerary` if none generated yet |
+
+**Multi-city trips:** send `route`, the front end's `RouteStop` list in travel order:
+`"route": [{ "city": "Paris", "country": "FR", "days": 2 }, { "city": "Rome", "country": "IT", "days": 1 }]`
+(`country` = ISO alpha-2; extra keys such as `cityId` are ignored). The legs' `days` must add up to the trip's
+length (422 otherwise), and `destination` stays as the display summary ("France & Italy"). With a route:
+- each itinerary day gets a `city`, and Gemini plans that day's stops in that city (a later start on travel days)
+- public holidays are fetched per country and applied only on the days spent there ("Christmas Day (FR)")
+- costs come back in each city's own currency, converted to the home currency as before
+- imports use every city on the route as context
+No `route` (or `[]`) = a single-destination trip, exactly as before.
 
 **Demo trip ID:** `t_demo0001` (Tokyo, 30 Dec 2026 to 2 Jan 2027, 2 travellers, GBP).
 
