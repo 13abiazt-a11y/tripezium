@@ -1,0 +1,18 @@
+[Unit]
+Description=IKU Trip Planner API (FastAPI + Uvicorn)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+User=iku
+Group=iku
+WorkingDirectory=/opt/iku/app/backend
+# The app reads /opt/iku/app/backend/.env itself (pydantic-settings), so no EnvironmentFile here.
+# One worker: endpoints run in a thread pool, and the in-memory rate limiter / Nominatim throttle
+# stay correct with a single process. Only listens on localhost; Caddy is the public entry point.
+ExecStart=/opt/iku/app/backend/.venv/bin/uvicorn app.main:app --host 127.0.0.1 --port 8000 --proxy-headers --forwarded-allow-ips 127.0.0.1
+Restart=always
+RestartSec=3
+
+[Install]
+WantedBy=multi-user.target

@@ -64,6 +64,30 @@ Tests: `python -m pytest -q` (API tests run against the DB in `DATABASE_URL` and
 
 The password in `DATABASE_URL` can contain special characters like `@`; the app percent-encodes it.
 
+## Deploy (Vultr)
+
+Ubuntu 24.04 VM. Uvicorn runs under **systemd** on `127.0.0.1:8000`; **Caddy** is the public entry point
+and gets/renews the HTTPS certificate automatically. No Docker: one Python service and one web server,
+nothing to build. Everything is in `backend/deploy/`.
+
+**One-time setup**
+1. Vultr: Ubuntu 24.04, London, add your SSH public key. Firewall group: allow TCP **22**, **80**, **443**.
+2. DNS (GoDaddy): `A` record `api` -> the server's IP.
+3. From the repo root on your machine (replace the IP and domain):
+   ```bash
+   scp backend/.env root@<IP>:/root/iku.env
+   ssh root@<IP> "curl -fsSL https://raw.githubusercontent.com/dnagasundhar-png/IKU_Trip_Planner/backend-m1/backend/deploy/setup.sh -o /root/setup.sh && bash /root/setup.sh api.<domain>"
+   ```
+   Without a domain yet, run `bash /root/setup.sh` (no argument): plain HTTP by IP, for testing only.
+   Browsers block calls from the HTTPS front end to an HTTP API.
+
+**Redeploy after pushing new code:** `ssh root@<IP> "bash /root/setup.sh api.<domain>"`
+(pulls the branch, reinstalls deps, applies the schema, restarts). Use `BRANCH=main bash ...` after merging.
+
+**Change a secret:** edit `backend/.env` locally, `scp` it to `/root/iku.env` again, re-run setup.
+
+**Logs:** `ssh root@<IP> journalctl -u iku-api -f` · status: `systemctl status iku-api caddy`
+
 ## Endpoints
 
 | Method + path | Notes |
