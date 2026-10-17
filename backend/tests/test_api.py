@@ -7,15 +7,17 @@ from decimal import Decimal
 
 import pytest
 from fastapi.testclient import TestClient
-from sqlalchemy import delete
+from sqlalchemy import delete, select
 
 from app.config import get_settings
 from app.db import _session_factory, check_db
 from app.main import app
 from app.mocks import demo_itinerary
-from app.models import TripRow
+from app.models import PlaceRow, TripRow
+from app.routers import itinerary as itinerary_router
 from app.routers import trips as trips_router
 from app.schemas import Itinerary
+from app.services.gemini import GDay, GItem, GItinerary, GNewPlace
 
 _url = get_settings().database_url
 DB_READY = bool(_url) and "<password>" not in _url and check_db() == "ok"
@@ -127,12 +129,54 @@ def test_place_bad_lat_rejected(client):
     assert r.status_code == 422
 
 
+def _fake_plan(imported_id: str) -> GItinerary:
+    def it(time, **kw):
+        return GItem(time=time, durationMins=60, note="n", estimatedCost=1000, currency="JPY", status="ok",
+                     **{"placeId": None, "newPlace": None, **kw})
+    new = GNewPlace(name="築地", nameEnglish="Tsukiji", category="Market", lat=35.66, lng=139.77)
+    dates = ["2026-12-01", "2026-12-02", "2026-12-03", "2026-12-04"]
+    return GItinerary(days=[
+        # out of order on purpose: the API sorts by time
+        GDay(date=dates[0], items=[it("12:00", newPlace=new), it("09:00", placeId=imported_id)]),
+        *[GDay(date=d, items=[it("10:00", newPlace=new)]) for d in dates[1:]],
+    ])
+
+
 @needs_db
-def test_itinerary_endpoint_returns_contract(client):
+def test_generate_itinerary_stores_and_creates_ai_places(client, monkeypatch):
     trip_id = client.post("/trips", json=TRIP_BODY).json()["id"]
+    imported = client.post(f"/trips/{trip_id}/places", json={"places": [{"name": "Senso-ji"}]}).json()["places"][0]
+
+    seen = {}
+    def fake_generate(trip, places):
+        seen["places"] = [p.id for p in places]
+        return _fake_plan(imported["id"])
+    monkeypatch.setattr(itinerary_router.gemini, "generate_plan", fake_generate)
+
+    assert client.get(f"/trips/{trip_id}/itinerary").json()["error"] == "no_itinerary"
+
     r = client.post(f"/trips/{trip_id}/itinerary")
     assert r.status_code == 200
-    Itinerary.model_validate(r.json())
+    data = r.json()
+    Itinerary.model_validate(data)
+    assert seen["places"] == [imported["id"]]  # imported places are passed to Gemini
+    day1 = data["days"][0]["items"]
+    assert [i["time"] for i in day1] == ["09:00", "12:00"]
+    assert day1[0]["placeId"] == imported["id"]
+
+    with _session_factory()() as db:
+        ai = db.scalars(select(PlaceRow).where(PlaceRow.trip_id == trip_id, PlaceRow.origin == "ai")).all()
+        assert len(ai) == 4 and ai[0].category == "market"
+        assert day1[1]["placeId"] in {p.id for p in ai}
+
+    # stored: GET returns the same thing
+    assert client.get(f"/trips/{trip_id}/itinerary").json() == data
+
+    # regenerating replaces old AI places instead of piling them up
+    client.post(f"/trips/{trip_id}/itinerary")
+    with _session_factory()() as db:
+        assert len(db.scalars(select(PlaceRow).where(PlaceRow.trip_id == trip_id, PlaceRow.origin == "ai")).all()) == 4
+        assert db.get(PlaceRow, imported["id"]) is not None
 
 
 def test_mock_itinerary_totals_add_up():
