@@ -1,6 +1,7 @@
 """All configuration comes from environment variables (or backend/.env locally)."""
 from functools import lru_cache
 
+from pydantic import field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -13,6 +14,20 @@ class Settings(BaseSettings):
     frontend_origins: str = "http://localhost:3000"
     nominatim_user_agent: str = "iku-trip-planner/1.0"
     google_maps_api_key: str = ""  # optional; used ONLY for opening hours
+
+    @field_validator("gemini_model", "gemini_fallback_models", "nominatim_user_agent", mode="before")
+    @classmethod
+    def _blank_means_default(cls, v, info):
+        # A blank line in .env (e.g. "GEMINI_MODEL=") would otherwise override the default with "".
+        if isinstance(v, str) and not v.strip():
+            return cls.model_fields[info.field_name].default
+        return v
+
+    @property
+    def gemini_models(self) -> list[str]:
+        """Primary model first, then fallbacks, without duplicates."""
+        fallbacks = [m.strip() for m in self.gemini_fallback_models.split(",") if m.strip()]
+        return list(dict.fromkeys([self.gemini_model, *fallbacks]))
 
     @property
     def cors_origins(self) -> list[str]:
