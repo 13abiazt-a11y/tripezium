@@ -195,3 +195,59 @@ def test_deadline_is_per_request_and_unset_outside(monkeypatch, three_models):
     with gemini.deadline(1000):
         pass
     assert gemini._call("hi") == "{}"   # no deadline leaks out of the with-block
+
+
+# --- CORS ---------------------------------------------------------------------------
+
+@pytest.mark.parametrize("origin, allowed", [
+    ("https://tripezium-git-c-frontend-wiring-iku.vercel.app", True),   # Vercel preview
+    ("https://tripezium-abc123-iku.vercel.app", True),
+    ("https://tripezium.vercel.app", True),
+    ("https://evil.vercel.app", False),
+    ("https://tripezium.vercel.app.evil.com", False),
+    ("http://tripezium-x.vercel.app", False),                            # https only
+])
+def test_cors_allows_vercel_previews_only(origin, allowed):
+    r = TestClient(app).options("/trips", headers={"Origin": origin, "Access-Control-Request-Method": "POST"})
+    assert (r.headers.get("access-control-allow-origin") == origin) is allowed
+
+
+# --- one generation per trip at a time ---------------------------------------------
+
+@needs_db
+def test_concurrent_generate_requests_share_one_generation(monkeypatch):
+    import threading
+    import time as _time
+
+    from app.routers import trips as trips_router
+    from tests.test_api import _fake_plan
+    monkeypatch.setattr(trips_router, "resolve_destination", lambda d: ("JP", "JPY"))
+    monkeypatch.setattr(planner, "get_holidays", lambda db, c, s, e: [])
+    monkeypatch.setattr(planner.fx, "get_rate", lambda db, b, q: (None, "test"))
+    monkeypatch.setattr(hours, "enabled", lambda: False)
+
+    trip_id = TestClient(app).post("/trips", json=TRIP_BODY).json()["id"]
+    imported = TestClient(app).post(f"/trips/{trip_id}/places", json={"places": [{"name": "Senso-ji"}]}).json()["places"][0]
+
+    calls = []
+    def slow_generate(*a, **k):
+        calls.append(1)
+        _time.sleep(1.5)                      # a slow Gemini call
+        return _fake_plan(imported["id"])
+    monkeypatch.setattr(planner.gemini, "generate_plan", slow_generate)
+
+    results = []
+    def ask():
+        results.append(TestClient(app).post(f"/trips/{trip_id}/itinerary"))
+    threads = [threading.Thread(target=ask) for _ in range(3)]
+    for t in threads:
+        t.start(); _time.sleep(0.1)
+    for t in threads:
+        t.join()
+
+    assert [r.status_code for r in results] == [200, 200, 200]
+    assert len(calls) == 1                                       # Gemini asked once, not three times
+    assert results[0].json() == results[1].json() == results[2].json()
+
+    TestClient(app).post(f"/trips/{trip_id}/itinerary")         # a later request regenerates as normal
+    assert len(calls) == 2
