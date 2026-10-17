@@ -4,6 +4,7 @@ Kept separate from the router so the Sunday chat-edit endpoint can reuse the sam
 """
 import datetime as dt
 import logging
+import time
 
 from sqlalchemy import delete, select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
@@ -184,7 +185,20 @@ def _sort(plan: gemini.GItinerary) -> gemini.GItinerary:
     return plan
 
 
+# If the first plan already took this long, skip the fix pass: a second Gemini call would push the
+# request past ~90s. Closed stops then stay visible as "closed" rather than the user waiting.
+FIX_PASS_BUDGET_S = 45.0
+# Hard cap on Gemini time per request, across model fallbacks and retries (see gemini.deadline).
+GENERATION_DEADLINE_S = 100.0
+
+
 def build_itinerary(db: Session, trip: TripRow) -> Itinerary:
+    with gemini.deadline(GENERATION_DEADLINE_S):
+        return _build_itinerary(db, trip)
+
+
+def _build_itinerary(db: Session, trip: TripRow) -> Itinerary:
+    started = time.perf_counter()
     imported_rows = list(db.scalars(
         select(PlaceRow).where(PlaceRow.trip_id == trip.id, PlaceRow.origin == "import")
     ))
@@ -200,7 +214,11 @@ def build_itinerary(db: Session, trip: TripRow) -> Itinerary:
     if len(imported) > 3 * len(plan.days):
         missing = []
 
-    if closed or missing:  # one fix pass; if it fails, keep the first plan and show those items as they are
+    elapsed = time.perf_counter() - started
+    if (closed or missing) and elapsed > FIX_PASS_BUDGET_S:
+        log.warning("trip=%s skipping fix pass: first plan took %.0fs (budget %.0fs); %d closed, %d missing",
+                    trip.id, elapsed, FIX_PASS_BUDGET_S, len(closed), len(missing))
+    elif closed or missing:  # one fix pass; if it fails, keep the first plan and show those items as they are
         log.info("trip=%s fix pass: %d closed, %d missing: %s", trip.id, len(closed), len(missing), (closed + missing)[:3])
         try:
             plan = _sort(gemini.generate_plan(trip, imported_rows, holidays, previous=plan, closed=closed, missing=missing))
@@ -216,4 +234,5 @@ def build_itinerary(db: Session, trip: TripRow) -> Itinerary:
     apply_costs(db, itinerary)
     save(db, trip.id, itinerary)
     db.commit()
+    log.info("trip=%s itinerary built in %.1fs", trip.id, time.perf_counter() - started)
     return itinerary

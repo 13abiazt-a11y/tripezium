@@ -6,6 +6,7 @@ from sqlalchemy.orm import Session
 from ..db import get_db
 from ..ids import new_id
 from ..models import PlaceRow
+from ..ratelimit import write_limit
 from ..schemas import Place, PlacesIn, PlacesOut
 from .trips import get_trip_or_404
 
@@ -36,7 +37,7 @@ def list_places(trip_id: str, db: Session = Depends(get_db)) -> PlacesOut:
     return PlacesOut(places=[place_out(r) for r in rows])
 
 
-@router.post("", response_model=PlacesOut)
+@router.post("", response_model=PlacesOut, dependencies=[Depends(write_limit)])
 def save_places(trip_id: str, body: PlacesIn, db: Session = Depends(get_db)) -> PlacesOut:
     """Upsert the places the user confirmed after import (origin='import')."""
     get_trip_or_404(db, trip_id)

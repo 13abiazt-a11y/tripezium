@@ -7,6 +7,7 @@ from ..db import get_db
 from ..errors import not_found
 from ..ids import new_id
 from ..models import TripRow
+from ..ratelimit import write_limit
 from ..schemas import RouteLeg, Trip, TripCreate
 from ..services.geo import currency_for, resolve_destination
 
@@ -35,7 +36,7 @@ def get_trip_or_404(db: Session, trip_id: str) -> TripRow:
     return row
 
 
-@router.post("", response_model=Trip, status_code=201)
+@router.post("", response_model=Trip, status_code=201, dependencies=[Depends(write_limit)])
 def create_trip(body: TripCreate, db: Session = Depends(get_db)) -> Trip:
     if body.route:
         # Countries come from the route, so no Nominatim lookup; each leg gets its own currency.

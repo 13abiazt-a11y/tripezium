@@ -64,6 +64,34 @@ Tests: `python -m pytest -q` (API tests run against the DB in `DATABASE_URL` and
 
 The password in `DATABASE_URL` can contain special characters like `@`; the app percent-encodes it.
 
+## Reliability (M8)
+
+- **Rate limits (per IP, in memory):** `POST /trips/{id}/itinerary` 10/min; `POST /trips` and
+  `POST /trips/{id}/places` 60/min. Reads aren't limited. Over the limit: 429 `rate_limited`.
+- **Gemini fallback:** models are tried in order (`GEMINI_MODEL`, then `GEMINI_FALLBACK_MODELS`). A model that
+  hits its quota (429) is skipped for 15 min; an overloaded one (5xx) is skipped for that call.
+- **Deadline:** one generation spends at most ~100s on Gemini. No new attempt starts with under 25s left;
+  the request then fails fast with 503 `gemini_busy` instead of hanging. If the first plan alone took over 45s,
+  the fix pass is skipped and any closed stops are shown as `closed`.
+- **Timeouts:** every outbound call has one (Gemini 60s; Nominatim, Nager.Date, Frankfurter, Places 5s); DB connect
+  5s and any single query 15s. Every external call is logged with its duration.
+- **Errors never include stack traces:** unexpected errors return 500 `internal_error`; details go to the server log.
+
+Error codes the front end may see (all `{ "error", "message" }`; `message` is safe to show the user):
+
+| Status | `error` | Meaning |
+|---|---|---|
+| 404 | `not_found`, `no_itinerary` | Unknown trip, or no itinerary generated yet |
+| 422 | `validation_error` | Bad request body; `message` says which field |
+| 429 | `rate_limited` | Too many requests from this IP; try again shortly |
+| 502 | `generation_failed` | Gemini returned an invalid itinerary twice |
+| 503 | `gemini_quota`, `gemini_busy` | Gemini out of quota, or too slow/overloaded right now |
+| 500 | `internal_error` | Anything unexpected |
+
+**Demo trip:** `python seed_demo.py` creates/refreshes `t_demo0001` and generates its itinerary (keeps the old
+itinerary if generation fails). `--no-generate` skips the Gemini call. Run it on the morning of the demo, after
+the free Gemini quota resets (midnight Pacific = 08:00 London).
+
 ## Deploy (Vultr)
 
 Ubuntu 24.04 VM. Uvicorn runs under **systemd** on `127.0.0.1:8000`; **Caddy** is the public entry point
