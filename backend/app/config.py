@@ -14,8 +14,10 @@ class Settings(BaseSettings):
     # Tried in order when a model hits its quota (429). Free-tier quotas are per model, ~20 requests/day.
     gemini_fallback_models: str = "gemini-3.7-flash,gemini-3.6-flash,gemini-3.5-flash"
     frontend_origins: str = "http://localhost:3000"
-    # Also allowed: Vercel preview deployments of the site (tripezium-<anything>.vercel.app).
-    frontend_origin_regex: str = r"https://tripezium(-[a-z0-9-]+)?\.vercel\.app"
+    # Always allowed, whatever FRONTEND_ORIGINS says: the live site (tripezium.club, www.) and its Vercel
+    # deployments (tripezium.vercel.app, previews tripezium-<anything>.vercel.app). Built in because a .env
+    # copied from .env.example once reset FRONTEND_ORIGINS to localhost and locked the live site out.
+    frontend_origin_regex: str = r"https://((www\.)?tripezium\.club|tripezium(-[a-z0-9-]+)?\.vercel\.app)"
     nominatim_user_agent: str = "iku-trip-planner/1.0"
     google_maps_api_key: str = ""  # optional; used ONLY for opening hours
 

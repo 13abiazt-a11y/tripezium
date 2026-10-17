@@ -203,7 +203,10 @@ def test_deadline_is_per_request_and_unset_outside(monkeypatch, three_models):
     ("https://tripezium-git-c-frontend-wiring-iku.vercel.app", True),   # Vercel preview
     ("https://tripezium-abc123-iku.vercel.app", True),
     ("https://tripezium.vercel.app", True),
+    ("https://www.tripezium.club", True),                                # live site, even if .env forgets it
+    ("https://tripezium.club", True),
     ("https://evil.vercel.app", False),
+    ("https://www.tripezium.club.evil.com", False),
     ("https://tripezium.vercel.app.evil.com", False),
     ("http://tripezium-x.vercel.app", False),                            # https only
 ])
