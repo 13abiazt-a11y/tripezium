@@ -19,7 +19,7 @@ from ..schemas import PlaceIn
 
 log = logging.getLogger("app.video_import")
 
-DEFAULT_MODEL = "gemini-2.5-flash"
+DEFAULT_MODEL = "gemini-3.8-flash"  # 2.5-flash is closed to new API keys
 
 Platform = Literal["youtube", "tiktok", "unknown"]
 

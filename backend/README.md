@@ -35,7 +35,7 @@ Tests: `python -m pytest -q`
 | `GET /imports/{jobId}` | Poll until `status` is `done` (places ready) or `failed` (show `message`, open the paste box) |
 
 **Video import:** YouTube links go straight to Gemini (needs `GEMINI_API_KEY`; `GEMINI_MODEL`
-defaults to `gemini-2.5-flash`). Results are cached per video, so a repeat import returns
+defaults to `gemini-3.8-flash`). Results are cached per video, so a repeat import returns
 `done` immediately. TikTok returns `failed` / `unsupported_platform` until Sprint 2.
 Try it without the server: `python -m app.services.video_import "<youtube-url>" Tokyo`
 
