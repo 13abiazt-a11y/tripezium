@@ -29,6 +29,7 @@ class Stop:
     name: str
     lat: float | None
     lng: float | None
+    city: str = ""  # the day's city on multi-city trips; falls back to the trip destination
 
 
 @dataclass
@@ -94,7 +95,7 @@ def _fetch(stop: Stop, destination: str) -> Hours | None:
             SEARCH_URL,
             headers={"X-Goog-Api-Key": get_settings().google_maps_api_key, "X-Goog-FieldMask": FIELD_MASK},
             json={
-                "textQuery": f"{stop.name}, {destination}",
+                "textQuery": f"{stop.name}, {stop.city or destination}",
                 "pageSize": 1,
                 "languageCode": "en",
                 "locationRestriction": {"rectangle": {

@@ -13,8 +13,8 @@ from ..errors import ApiError
 from ..ids import new_id
 from ..models import ItineraryRow, PlaceRow, TripRow
 from ..schemas import Itinerary, ItineraryDay, ItineraryItem
-from . import budget, fx, gemini, hours
-from .holidays import apply_closure_check, get_holidays
+from . import budget, fx, gemini, hours, route
+from .holidays import Holiday, apply_closure_check, get_holidays
 
 log = logging.getLogger("app.planner")
 
@@ -26,14 +26,35 @@ def _valid_coords(lat: float | None, lng: float | None) -> bool:
     return lat is not None and lng is not None and -90 <= lat <= 90 and -180 <= lng <= 180
 
 
-def _stop(item: gemini.GItem, imported: dict[str, PlaceRow]) -> hours.Stop:
+def _stop(item: gemini.GItem, imported: dict[str, PlaceRow], city: str = "") -> hours.Stop:
     if item.placeId is not None:
         p = imported[item.placeId]
         if p.lat is None and _valid_coords(item.placeLat, item.placeLng):
-            return hours.Stop(p.name, item.placeLat, item.placeLng)  # Gemini placed it for us
-        return hours.Stop(p.name, p.lat, p.lng)
+            return hours.Stop(p.name, item.placeLat, item.placeLng, city)  # Gemini placed it for us
+        return hours.Stop(p.name, p.lat, p.lng, city)
     np = item.newPlace
-    return hours.Stop(np.name, np.lat, np.lng)
+    return hours.Stop(np.name, np.lat, np.lng, city)
+
+
+def _city_by_date(trip: TripRow) -> dict[str, str]:
+    """ISO date -> that day's city. Empty for single-destination trips (the trip destination is used)."""
+    if not route.is_multi_city(trip):
+        return {}
+    return {d.isoformat(): leg.city for d, leg in route.day_legs(trip)}
+
+
+def trip_holidays(db: Session, trip: TripRow) -> list[Holiday]:
+    """Each country's public holidays, only on the dates the traveller is in that country."""
+    by_country: dict[str | None, list[dt.date]] = {}
+    for d, leg in route.day_legs(trip):
+        by_country.setdefault(leg.country, []).append(d)
+    several = len(by_country) > 1
+    out = []
+    for country, dates in by_country.items():
+        for h in get_holidays(db, country, min(dates), max(dates)):
+            if h.date in dates:
+                out.append(Holiday(h.date, f"{h.name} ({country})" if several else h.name))
+    return sorted(out, key=lambda h: h.date)
 
 
 def missing_saved_places(plan: gemini.GItinerary, imported: dict[str, PlaceRow]) -> list[str]:
@@ -52,7 +73,9 @@ def _name(item: gemini.GItem, imported: dict[str, PlaceRow]) -> str:
 def check_hours(trip: TripRow, plan: gemini.GItinerary, imported: dict[str, PlaceRow]) -> tuple[Verdicts, list[str]]:
     """Check every item against opening hours. Returns verdicts and human-readable 'closed' lines for Gemini."""
     on = hours.enabled()
-    found = hours.lookup_all({_stop(i, imported) for d in plan.days for i in d.items}, trip.destination) if on else {}
+    city = _city_by_date(trip)
+    found = hours.lookup_all({_stop(i, imported, city.get(d.date, "")) for d in plan.days for i in d.items},
+                             trip.destination) if on else {}
 
     verdicts: Verdicts = []
     closed: list[str] = []
@@ -62,7 +85,7 @@ def check_hours(trip: TripRow, plan: gemini.GItinerary, imported: dict[str, Plac
         for item in day.items:
             verdict = None
             if on:
-                h = found.get(_stop(item, imported))
+                h = found.get(_stop(item, imported, city.get(day.date, "")))
                 if h is None:
                     verdict = "unknown"
                 elif hours.is_open_for_visit(h, date, item.time, item.durationMins):
@@ -101,6 +124,7 @@ def _to_itinerary(
     """Contract shape. Stops Gemini invented become places (origin='ai'), replacing earlier AI suggestions."""
     db.execute(delete(PlaceRow).where(PlaceRow.trip_id == trip.id, PlaceRow.origin == "ai"))
     categories: dict[str, str | None] = {}
+    city_by_date = _city_by_date(trip)
 
     days = []
     for gday, day_verdicts in zip(plan.days, verdicts):
@@ -129,7 +153,8 @@ def _to_itinerary(
                 cost_home=0.0,  # filled in by budget.apply_budget
                 status=final_status(g.status, verdict, category),
             ))
-        days.append(ItineraryDay(date=gday.date, holiday=None, items=items, day_total_home=0.0))
+        days.append(ItineraryDay(date=gday.date, city=city_by_date.get(gday.date), holiday=None, items=items,
+                                 day_total_home=0.0))
 
     return Itinerary(days=days, trip_total_home=0.0, home_currency=trip.home_currency), categories
 
@@ -164,7 +189,7 @@ def build_itinerary(db: Session, trip: TripRow) -> Itinerary:
         select(PlaceRow).where(PlaceRow.trip_id == trip.id, PlaceRow.origin == "import")
     ))
     imported = {p.id: p for p in imported_rows}
-    holidays = get_holidays(db, trip.country_code, trip.start_date, trip.end_date)
+    holidays = trip_holidays(db, trip)
 
     plan = _sort(gemini.generate_plan(trip, imported_rows, holidays))
     verdicts, closed = check_hours(trip, plan, imported)

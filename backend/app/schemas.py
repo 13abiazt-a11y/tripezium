@@ -22,8 +22,21 @@ class CamelModel(BaseModel):
 
 # --- Trip ---------------------------------------------------------------
 
+MAX_ROUTE_LEGS = 15
+
+
+class RouteLeg(CamelModel):
+    """One city on a multi-city trip, in travel order (the front end's RouteStop)."""
+    city: str = Field(min_length=1, max_length=100)
+    country: str = Field(pattern=r"^[A-Z]{2}$")  # ISO 3166-1 alpha-2, e.g. "FR"
+    days: int = Field(ge=1, le=MAX_TRIP_DAYS)
+
+
 class TripCreate(CamelModel):
-    destination: str = Field(min_length=1, max_length=200)
+    destination: str = Field(min_length=1, max_length=200)  # display summary, e.g. "France & Italy"
+    # Optional. Empty = a single-destination trip (the original contract). When given, the legs'
+    # days must add up to the trip's length; the itinerary then plans each day in that day's city.
+    route: list[RouteLeg] = Field(default_factory=list, max_length=MAX_ROUTE_LEGS)
     start_date: dt.date
     end_date: dt.date
     day_start: str = Field("09:00", pattern=HHMM)
@@ -40,6 +53,10 @@ class TripCreate(CamelModel):
             raise ValueError(f"trips are limited to {MAX_TRIP_DAYS} days")
         if self.day_end <= self.day_start:  # "HH:MM" strings compare correctly
             raise ValueError("dayEnd must be after dayStart")
+        trip_days = (self.end_date - self.start_date).days + 1
+        if self.route and sum(leg.days for leg in self.route) != trip_days:
+            raise ValueError(f"route days add up to {sum(leg.days for leg in self.route)}, "
+                             f"but the trip is {trip_days} days")
         return self
 
 
@@ -93,6 +110,7 @@ class ItineraryItem(CamelModel):
 
 class ItineraryDay(CamelModel):
     date: dt.date
+    city: str | None = None  # the route leg this day belongs to (multi-city trips)
     holiday: str | None = None
     items: list[ItineraryItem]
     day_total_home: float

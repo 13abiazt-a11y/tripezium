@@ -71,3 +71,6 @@ CREATE TABLE IF NOT EXISTS geocode_cache (
   created_at   TIMESTAMPTZ NOT NULL DEFAULT now(),
   PRIMARY KEY (query, country_code)
 );
+
+-- Multi-city trips: the route in travel order, [{"city","country","days","currency"}]. [] = one destination.
+ALTER TABLE trips ADD COLUMN IF NOT EXISTS route JSONB NOT NULL DEFAULT '[]';
