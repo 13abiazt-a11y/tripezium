@@ -7,11 +7,11 @@
 # Secrets: copy backend/.env to /root/iku.env on the server first (never in git). On the first run
 # it's installed as /opt/iku/app/backend/.env; later runs keep the existing one unless
 # /root/iku.env is newer.
-# BRANCH defaults to backend-m1; set BRANCH=main once the PR is merged.
+# BRANCH defaults to main; e.g. BRANCH=my-feature to try a branch on the server.
 set -euo pipefail
 
 DOMAIN="${1:-}"
-BRANCH="${BRANCH:-backend-m1}"
+BRANCH="${BRANCH:-main}"
 REPO="https://github.com/dnagasundhar-png/IKU_Trip_Planner.git"
 STAGED_ENV=/root/iku.env
 APP=/opt/iku/app

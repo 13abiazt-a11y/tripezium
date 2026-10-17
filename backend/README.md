@@ -76,13 +76,13 @@ nothing to build. Everything is in `backend/deploy/`.
 3. From the repo root on your machine (replace the IP and domain):
    ```bash
    scp backend/.env root@<IP>:/root/iku.env
-   ssh root@<IP> "curl -fsSL https://raw.githubusercontent.com/dnagasundhar-png/IKU_Trip_Planner/backend-m1/backend/deploy/setup.sh -o /root/setup.sh && bash /root/setup.sh api.<domain>"
+   ssh root@<IP> "curl -fsSL https://raw.githubusercontent.com/dnagasundhar-png/IKU_Trip_Planner/main/backend/deploy/setup.sh -o /root/setup.sh && bash /root/setup.sh api.<domain>"
    ```
    Without a domain yet, run `bash /root/setup.sh` (no argument): plain HTTP by IP, for testing only.
    Browsers block calls from the HTTPS front end to an HTTP API.
 
 **Redeploy after pushing new code:** `ssh root@<IP> "bash /root/setup.sh api.<domain>"`
-(pulls the branch, reinstalls deps, applies the schema, restarts). Use `BRANCH=main bash ...` after merging.
+(pulls `main`, reinstalls deps, applies the schema, restarts). To try another branch: `BRANCH=<branch> bash /root/setup.sh api.<domain>`.
 
 **Change a secret:** edit `backend/.env` locally, `scp` it to `/root/iku.env` again, re-run setup.
 
