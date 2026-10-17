@@ -16,10 +16,9 @@ from pydantic import BaseModel
 from ..config import get_settings
 from ..errors import ApiError
 from ..schemas import PlaceIn
+from . import geo
 
 log = logging.getLogger("app.video_import")
-
-DEFAULT_MODEL = "gemini-3.8-flash"  # 2.5-flash is closed to new API keys
 
 Platform = Literal["youtube", "tiktok", "unknown"]
 
@@ -133,7 +132,7 @@ def extract_places_from_youtube(link: str, destination: str | None = None) -> li
     client = genai.Client(api_key=settings.gemini_api_key)
     try:
         resp = client.models.generate_content(
-            model=settings.gemini_model or DEFAULT_MODEL,
+            model=settings.gemini_model,
             contents=types.Content(role="user", parts=[
                 types.Part(file_data=types.FileData(file_uri=url)),
                 types.Part(text=_prompt(destination)),
@@ -164,9 +163,44 @@ def extract_places_from_youtube(link: str, destination: str | None = None) -> li
     return places
 
 
+# --- Geocoding ------------------------------------------------------------
+
+FAR_KM = 150  # further than this from the destination centre -> probably a wrong match (or a day trip)
+
+
+def geocode_places(places: list[PlaceIn], destination: str | None,
+                   country_code: str | None = None) -> list[PlaceIn]:
+    """Fill lat/lng using the destination as context. Places that can't be found keep lat/lng
+    None and get their confidence halved, so the review screen can flag them."""
+    centre = geo.geocode(destination) if destination else None
+    country_code = country_code or (centre or {}).get("country_code")
+
+    out = []
+    for p in places:
+        hit = None
+        for name in dict.fromkeys(n for n in (p.name_english, p.name) if n):  # English first, then local
+            query = f"{name}, {destination}" if destination else name
+            hit = geo.geocode(query, country_code) or (geo.geocode(name, country_code) if destination else None)
+            if hit:
+                break
+
+        conf = p.confidence if p.confidence is not None else 0.5
+        if not hit:
+            out.append(p.model_copy(update={"confidence": round(conf * 0.5, 2)}))
+            continue
+        if centre and geo.distance_km(centre["lat"], centre["lng"], hit["lat"], hit["lng"]) > FAR_KM:
+            conf *= 0.5
+        out.append(p.model_copy(update={"lat": hit["lat"], "lng": hit["lng"], "confidence": round(conf, 2)}))
+
+    found = sum(1 for p in out if p.lat is not None)
+    log.info("geocoded %d/%d places (destination=%r, country=%s)", found, len(out), destination, country_code)
+    return out
+
+
 if __name__ == "__main__":
     logging.basicConfig(level=logging.INFO)
     if len(sys.argv) < 2:
         sys.exit("usage: python -m app.services.video_import <youtube-url> [destination]")
-    found = extract_places_from_youtube(sys.argv[1], sys.argv[2] if len(sys.argv) > 2 else None)
+    dest = sys.argv[2] if len(sys.argv) > 2 else None
+    found = geocode_places(extract_places_from_youtube(sys.argv[1], dest), dest)
     print(json.dumps([p.model_dump(by_alias=True) for p in found], indent=2, ensure_ascii=False))

@@ -4,6 +4,7 @@ Resolved once on POST /trips and stored on the trip. If anything fails the trip 
 saves; holidays and currency are then skipped or defaulted downstream.
 """
 import logging
+import math
 import re
 import threading
 import time
@@ -66,6 +67,53 @@ def lookup_country_code(destination: str) -> str | None:
 
     _cache[key] = code
     return code
+
+
+# --- Place geocoding (video import) -----------------------------------------
+
+_geo_cache: dict[tuple[str, str | None], dict | None] = {}
+
+
+def geocode(query: str, country_code: str | None = None) -> dict | None:
+    """Free-text query -> {"lat", "lng", "country_code"} or None. Same 1 req/s limit as above."""
+    key = (query.strip().lower(), country_code)
+    if key in _geo_cache:
+        return _geo_cache[key]
+
+    params = {"q": query, "format": "jsonv2", "limit": 1, "addressdetails": 1}
+    if country_code:
+        params["countrycodes"] = country_code.lower()
+
+    global _last_call
+    with _nominatim_lock:
+        wait = 1.0 - (time.monotonic() - _last_call)
+        if wait > 0:
+            time.sleep(wait)
+        try:
+            r = httpx.get(NOMINATIM_URL, params=params,
+                          headers={"User-Agent": get_settings().nominatim_user_agent}, timeout=5.0)
+            r.raise_for_status()
+            results = r.json()
+        except Exception as e:
+            log.warning("nominatim geocode failed q=%r %s", query, e)
+            return None  # don't cache failures
+        finally:
+            _last_call = time.monotonic()
+
+    hit = None
+    if results:
+        top = results[0]
+        hit = {"lat": float(top["lat"]), "lng": float(top["lon"]),
+               "country_code": (top.get("address", {}).get("country_code") or "").upper() or None}
+    _geo_cache[key] = hit
+    return hit
+
+
+def distance_km(lat1: float, lng1: float, lat2: float, lng2: float) -> float:
+    p1, p2 = math.radians(lat1), math.radians(lat2)
+    dp, dl = p2 - p1, math.radians(lng2 - lng1)
+    a = math.sin(dp / 2) ** 2 + math.cos(p1) * math.cos(p2) * math.sin(dl / 2) ** 2
+    return 6371 * 2 * math.asin(math.sqrt(a))
 
 
 def _currency_from_gemini(country_code: str) -> str | None:
