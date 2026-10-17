@@ -1,7 +1,7 @@
 """Import places from a link, pasted text or screenshots. Every route starts a background job;
 GET /imports/{jobId} polls it.
 
-Jobs and the cache live in memory for now (like the M1 mocks).
+Jobs live in memory. Gemini and geocoding results are cached in Tiger Data (services/import_cache).
 """
 import hashlib
 import logging
@@ -14,7 +14,7 @@ from ..db import _session_factory
 from ..errors import ApiError, not_found
 from ..ids import new_id
 from ..schemas import ImportCreate, ImportJob, ImportTextCreate, Place, PlaceIn
-from ..services import video_import
+from ..services import import_cache, video_import
 from .trips import get_trip_or_404
 
 log = logging.getLogger("app.imports")
@@ -22,7 +22,6 @@ log = logging.getLogger("app.imports")
 router = APIRouter(prefix="/imports", tags=["imports"])
 
 JOBS: dict[str, ImportJob] = {}
-CACHE: dict[str, list[PlaceIn]] = {}  # "youtube:<id>" / "tiktok:<id>" / "text:<sha>" -> places straight from Gemini
 _lock = threading.Lock()
 
 MAX_IMAGES = 10
@@ -55,10 +54,10 @@ def _run(job_id: str, prepare: Prepare, destination: str | None, country_code: s
     _update(job_id, status="running")
     try:
         cache_key, extract, message = prepare()  # may hit the network (e.g. TikTok short links)
-        places = CACHE.get(cache_key)
+        places = import_cache.get_places(cache_key)
         if places is None:
             places = extract()
-            CACHE[cache_key] = places  # raw Gemini output; geocoding is cached separately per query
+            import_cache.put_places(cache_key, places)  # raw Gemini output; geocoding is cached per query
         places = video_import.geocode_places(places, destination, country_code)
     except ApiError as exc:
         _update(job_id, status="failed", error=exc.code, message=exc.message)

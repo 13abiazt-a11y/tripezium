@@ -61,8 +61,9 @@ class PlaceIn(CamelModel):
     source_url: str | None = None
     timestamp: str | None = None
     tip: str | None = None
-    # Importer-internal geocoding hint (e.g. "Asakusa"). Never serialised, not part of the contract.
+    # Importer-internal geocoding hints (e.g. "Asakusa", "Tokyo"). Never serialised, not in the contract.
     area: str | None = Field(None, exclude=True)
+    city: str | None = Field(None, exclude=True)
 
 
 class Place(PlaceIn):

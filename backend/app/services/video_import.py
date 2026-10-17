@@ -67,6 +67,7 @@ class _ExtractedPlace(BaseModel):
     timestamp: str | None = None
     tip: str | None = None
     area: str | None = None
+    city: str | None = None
 
 
 class _Extraction(BaseModel):
@@ -93,6 +94,7 @@ For each place:
 - tip: one short practical tip from the video (best time, what to order, booking), or null
 - area: the neighbourhood or district it is in (e.g. "Asakusa", "Shinjuku"), if known. This is
   used to find it on a map, so prefer the commonly used local district name
+- city: the city or town it is in (e.g. "Osaka", "Kyoto"), even if the video is about a different city
 
 Do not invent places. If the video has no places, return an empty list."""
 
@@ -117,6 +119,7 @@ def _to_place_in(p: _ExtractedPlace, source_url: str) -> PlaceIn | None:
         timestamp=p.timestamp or None,
         tip=p.tip or None,
         area=(p.area or "").strip() or None,
+        city=(p.city or "").strip() or None,
     )
 
 
@@ -130,20 +133,27 @@ def _extract(build_parts, source_url: str | None, fail_message: str) -> list[Pla
     from google.genai import types
 
     client = genai.Client(api_key=settings.gemini_api_key)
-    try:
-        resp = client.models.generate_content(
-            model=settings.gemini_model,
-            contents=types.Content(role="user", parts=build_parts(types)),
-            config=types.GenerateContentConfig(
-                system_instruction=SYSTEM_PROMPT,
-                response_mime_type="application/json",
-                response_schema=_Extraction,
-                temperature=0.2,
-            ),
-        )
-    except Exception as exc:  # network, quota, private/unavailable video, ...
-        log.warning("gemini call failed for %s: %s", source_url, exc)
-        raise ApiError(502, "gemini_failed", fail_message) from exc
+    contents = types.Content(role="user", parts=build_parts(types))
+    config = types.GenerateContentConfig(
+        system_instruction=SYSTEM_PROMPT,
+        response_mime_type="application/json",
+        response_schema=_Extraction,
+        temperature=0.2,
+    )
+    resp = None
+    for model in settings.gemini_models:
+        try:
+            resp = client.models.generate_content(model=model, contents=contents, config=config)
+            break
+        except Exception as exc:  # network, quota, private/unavailable video, ...
+            if getattr(exc, "code", None) == 429:  # this model's quota is used up: try the next one
+                log.warning("gemini quota exhausted for %s, trying the next model", model)
+                continue
+            log.warning("gemini call failed for %s (%s): %s", source_url, model, exc)
+            raise ApiError(502, "gemini_failed", fail_message) from exc
+    if resp is None:
+        raise ApiError(503, "gemini_quota",
+                       "Our AI has used up its free requests for now. Please try again later.")
 
     extraction = resp.parsed
     if not isinstance(extraction, _Extraction):  # parsed can be None if the JSON was off-schema
@@ -278,8 +288,11 @@ def geocode_places(places: list[PlaceIn], destination: str | None,
     for p in places:
         names = [n for n in (p.name_english, p.name) if n]  # English first, then local
         # Most specific first: "Nakamise, Tokyo" alone matches a different Nakamise 40 km away.
-        queries = [", ".join(x for x in (n, p.area, destination) if x) for n in names]
-        queries += [f"{n}, {destination}" for n in names if destination] + names
+        # Use the place's own city: a Tokyo trip's video can include Osaka, and "Dotonbori, Tokyo"
+        # finds the wrong thing. The distance check below then lowers confidence for far places.
+        city = p.city or destination
+        queries = [", ".join(x for x in (n, p.area, city) if x) for n in names]
+        queries += [f"{n}, {city}" for n in names if city] + names
         hit = None
         for query in dict.fromkeys(queries):
             hit = geo.geocode(query, country_code)

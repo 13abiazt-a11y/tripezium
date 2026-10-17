@@ -13,7 +13,7 @@ from app.main import app
 from app.mocks import DEMO_TRIP_ID
 from app.routers import imports
 from app.schemas import ImportJob, PlaceIn
-from app.services import geo, video_import
+from app.services import geo, import_cache, video_import
 from app.services.video_import import detect_platform, geocode_places, youtube_video_id
 
 client = TestClient(app)
@@ -23,6 +23,13 @@ needs_db = pytest.mark.skipif(not (_url and "<password>" not in _url and check_d
                               reason="DATABASE_URL not set or unreachable")
 
 VID = "dQw4w9WgXcQ"
+
+
+@pytest.fixture(autouse=True)
+def _no_db_cache(monkeypatch):
+    """Keep fake test places out of the real import_cache table (see test_cache_survives_restart)."""
+    monkeypatch.setattr(import_cache, "_db_enabled", lambda: False)
+    import_cache.clear_memory()
 
 TOKYO = {"lat": 35.68, "lng": 139.76, "country_code": "JP"}
 SENSOJI = {"lat": 35.7148, "lng": 139.7967, "country_code": "JP"}
@@ -80,7 +87,7 @@ def fake_geocoder(monkeypatch):
 @pytest.fixture
 def fake_gemini(monkeypatch, fake_geocoder):
     imports.JOBS.clear()
-    imports.CACHE.clear()
+    import_cache.clear_memory()
     calls = []
 
     def fake(link, destination=None):
@@ -153,11 +160,18 @@ def test_geocode_tries_area_first_and_area_is_never_serialised(fake_geocoder):
     [p] = geocode_places([PlaceIn(name="仲見世", name_english="Nakamise", area="Asakusa", confidence=0.9)], "Tokyo")
     queries = [q for q, _ in fake_geocoder if q != "Tokyo"]
     assert queries[:2] == ["Nakamise, Asakusa, Tokyo", "仲見世, Asakusa, Tokyo"]
-    assert "area" not in p.model_dump(by_alias=True)
+    assert not {"area", "city"} & set(p.model_dump(by_alias=True))
+
+
+def test_geocode_uses_the_places_own_city(fake_geocoder):
+    geocode_places([PlaceIn(name="道頓堀", name_english="Dotonbori", area="Namba", city="Osaka")], "Tokyo")
+    queries = [q for q, _ in fake_geocoder if q != "Tokyo"]
+    assert queries[0] == "Dotonbori, Namba, Osaka"
+    assert not any(q.endswith(", Tokyo") for q in queries)  # never "Dotonbori, Tokyo"
 
 
 def test_gemini_failure_marks_job_failed(monkeypatch, fake_geocoder):
-    imports.CACHE.clear()
+    import_cache.clear_memory()
 
     def boom(link, destination=None):
         raise ApiError(502, "gemini_failed", "We couldn't read that video.")
@@ -172,7 +186,7 @@ def test_gemini_failure_marks_job_failed(monkeypatch, fake_geocoder):
 @pytest.fixture
 def fake_tiktok(monkeypatch, fake_geocoder):
     imports.JOBS.clear()
-    imports.CACHE.clear()
+    import_cache.clear_memory()
     calls = []
 
     def fake_resolve(link):
@@ -229,7 +243,7 @@ def test_resolve_tiktok_rewrites_photo_and_follows_short_links(monkeypatch):
 @pytest.fixture
 def fake_text_and_images(monkeypatch, fake_geocoder):
     imports.JOBS.clear()
-    imports.CACHE.clear()
+    import_cache.clear_memory()
     calls = {"text": [], "images": []}
 
     def fake_text(text, destination=None, source_url=None, images=()):
@@ -321,3 +335,103 @@ def test_missing_api_key_is_a_clear_error(monkeypatch):
     with pytest.raises(ApiError) as exc:
         video_import.extract_places_from_youtube(f"https://youtu.be/{VID}")
     assert exc.value.code == "gemini_not_configured"
+
+
+@needs_db
+def test_cache_survives_restart(monkeypatch):
+    """Places and geocodes written to Tiger Data come back after the memory cache is wiped."""
+    from sqlalchemy import delete
+
+    from app.db import _session_factory
+    from app.models import GeocodeCacheRow, ImportCacheRow
+
+    monkeypatch.setattr(import_cache, "_db_enabled", lambda: True)
+    key, query = "pytest:cache-test", "pytest nowhere street"
+    try:
+        import_cache.put_places(key, [PlaceIn(name="仲見世", name_english="Nakamise", area="Asakusa", city="Tokyo",
+                                              confidence=0.9)])
+        import_cache.put_geocode(query, "JP", {"lat": 1.0, "lng": 2.0, "country_code": "JP"})
+        import_cache.put_geocode(query, None, None)  # "not found" is cached too
+        import_cache.clear_memory()  # = server restart
+
+        [p] = import_cache.get_places(key)
+        assert (p.name, p.name_english, p.area, p.city, p.confidence) == ("仲見世", "Nakamise", "Asakusa", "Tokyo", 0.9)
+        assert import_cache.get_geocode(query.upper(), "JP") == {"lat": 1.0, "lng": 2.0, "country_code": "JP"}
+        assert import_cache.get_geocode(query, None) is None
+        assert import_cache.get_geocode("pytest never stored", None) is import_cache.MISS
+        assert import_cache.get_places("pytest:never-stored") is None
+    finally:
+        with _session_factory()() as db:
+            db.execute(delete(ImportCacheRow).where(ImportCacheRow.cache_key.like("pytest:%")))
+            db.execute(delete(GeocodeCacheRow).where(GeocodeCacheRow.query.like("pytest %")))
+            db.commit()
+
+
+def test_cache_db_errors_are_cache_misses(monkeypatch):
+    monkeypatch.setattr(import_cache, "_db_enabled", lambda: True)
+
+    def broken():
+        raise RuntimeError("database down")
+
+    monkeypatch.setattr(import_cache, "_session_factory", lambda: broken)
+    assert import_cache.get_places("youtube:x") is None
+    assert import_cache.get_geocode("anything", None) is import_cache.MISS
+    import_cache.put_places("youtube:x", [PlaceIn(name="a")])  # logged, not raised
+    assert import_cache.get_places("youtube:x")[0].name == "a"  # still cached in memory
+
+
+class _QuotaError(Exception):
+    code = 429
+
+
+def _fake_genai(monkeypatch, outcomes):
+    """Stub google.genai.Client: outcomes maps model -> exception to raise, or places to return."""
+    import google.genai
+
+    from app.config import Settings
+    from app.services.video_import import _Extraction, _ExtractedPlace
+
+    tried = []
+
+    class Models:
+        def generate_content(self, model, contents, config):
+            tried.append(model)
+            out = outcomes[model]
+            if isinstance(out, Exception):
+                raise out
+            return type("R", (), {"parsed": _Extraction(places=[_ExtractedPlace(
+                name=n, name_english=n, category="temple", confidence=0.9) for n in out]), "text": ""})()
+
+    monkeypatch.setattr(google.genai, "Client", lambda **kw: type("C", (), {"models": Models()})())
+    monkeypatch.setattr(video_import, "get_settings", lambda: Settings(
+        gemini_api_key="test", gemini_model="m1", gemini_fallback_models="m2,m3"))
+    return tried
+
+
+def test_gemini_falls_back_to_next_model_on_quota(monkeypatch):
+    tried = _fake_genai(monkeypatch, {"m1": _QuotaError("429"), "m2": ["Senso-ji"], "m3": ["never"]})
+    places = video_import.extract_places_from_text("Senso-ji at sunrise")
+    assert [p.name for p in places] == ["Senso-ji"]
+    assert tried == ["m1", "m2"]
+
+
+def test_gemini_all_models_out_of_quota(monkeypatch):
+    tried = _fake_genai(monkeypatch, {m: _QuotaError("429") for m in ("m1", "m2", "m3")})
+    with pytest.raises(ApiError) as exc:
+        video_import.extract_places_from_text("Senso-ji")
+    assert exc.value.code == "gemini_quota"
+    assert tried == ["m1", "m2", "m3"]
+
+
+def test_gemini_other_errors_do_not_fall_back(monkeypatch):
+    tried = _fake_genai(monkeypatch, {"m1": RuntimeError("video is private"), "m2": ["x"], "m3": ["x"]})
+    with pytest.raises(ApiError) as exc:
+        video_import.extract_places_from_youtube(f"https://youtu.be/{VID}")
+    assert exc.value.code == "gemini_failed"
+    assert tried == ["m1"]
+
+
+def test_blank_fallback_setting_uses_default():
+    from app.config import Settings
+    s = Settings(gemini_model="", gemini_fallback_models=" ")
+    assert s.gemini_models == ["gemini-3.8-flash", "gemini-3.7-flash", "gemini-3.6-flash", "gemini-3.5-flash"]

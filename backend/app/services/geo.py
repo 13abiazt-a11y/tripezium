@@ -12,6 +12,7 @@ import time
 import httpx
 
 from ..config import get_settings
+from . import import_cache
 
 log = logging.getLogger("app.geo")
 
@@ -71,14 +72,12 @@ def lookup_country_code(destination: str) -> str | None:
 
 # --- Place geocoding (video import) -----------------------------------------
 
-_geo_cache: dict[tuple[str, str | None], dict | None] = {}
-
-
 def geocode(query: str, country_code: str | None = None) -> dict | None:
-    """Free-text query -> {"lat", "lng", "country_code"} or None. Same 1 req/s limit as above."""
-    key = (query.strip().lower(), country_code)
-    if key in _geo_cache:
-        return _geo_cache[key]
+    """Free-text query -> {"lat", "lng", "country_code"} or None. Same 1 req/s limit as above.
+    Cached in memory and in Tiger Data (geocode_cache), including "not found"."""
+    cached = import_cache.get_geocode(query, country_code)
+    if cached is not import_cache.MISS:
+        return cached
 
     params = {"q": query, "format": "jsonv2", "limit": 1, "addressdetails": 1}
     if country_code:
@@ -105,7 +104,7 @@ def geocode(query: str, country_code: str | None = None) -> dict | None:
         top = results[0]
         hit = {"lat": float(top["lat"]), "lng": float(top["lon"]),
                "country_code": (top.get("address", {}).get("country_code") or "").upper() or None}
-    _geo_cache[key] = hit
+    import_cache.put_geocode(query, country_code, hit)
     return hit
 
 
