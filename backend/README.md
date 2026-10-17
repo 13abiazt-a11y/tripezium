@@ -35,6 +35,32 @@ The password in `DATABASE_URL` can contain special characters like `@`; the app 
 | `POST /trips/{id}/places` | Body `{ "places": [Place] }`. Missing `id`s are assigned. Returns `{ "places": [Place] }` |
 | `POST /trips/{id}/itinerary` | Generates and stores the itinerary |
 | `GET /trips/{id}/itinerary` | Returns the stored itinerary |
+| `POST /imports` | Body `{ "link", "tripId"? }` (YouTube or TikTok, short links OK). Returns 202 + ImportJob `{ jobId, status, platform, link, places, error, message }` |
+| `POST /imports/text` | Paste-a-caption fallback. Body `{ "text", "tripId"?, "sourceUrl"? }`. Returns 202 + ImportJob |
+| `POST /imports/images` | Screenshots. Multipart form: `files` (1 to 10 JPEG/PNG/WebP/HEIC, 10 MB each) + optional `tripId`. Returns 202 + ImportJob |
+| `GET /imports/{jobId}` | Poll until `status` is `done` (places ready) or `failed` (show `message`, offer screenshots / paste box) |
+
+**Import:** everything goes through Gemini (needs `GEMINI_API_KEY`; `GEMINI_MODEL` defaults to
+`gemini-3.8-flash`), then places are geocoded with Nominatim using the trip's destination.
+- **YouTube:** the URL goes straight to Gemini, which watches the video.
+- **TikTok:** no downloading. The caption and cover image come from TikTok's public oEmbed endpoint.
+  Photo slideshows only expose the first slide, so a `done` job carries a `message` asking for screenshots.
+- **Text / screenshots:** all screenshots are read together in one call, so a whole slideshow works.
+- `failed` with `error: "no_places"` means nothing was found; `message` says what to try next.
+
+Gemini results (per video / post / text / set of images) and Nominatim lookups are cached in
+Tiger Data (`import_cache`, `geocode_cache`), so they survive restarts and redeploys. **Pre-import the
+demo videos before judging** and they come back in about 2 seconds. Without `DATABASE_URL` the
+caches are memory-only.
+
+**Gemini quota:** free-tier keys get about 20 requests per day *per model*. When a model returns 429,
+the importer moves on to the next one in `GEMINI_FALLBACK_MODELS`. If every model is out, the job fails
+with `error: "gemini_quota"`.
+
+Places outside the trip's city (e.g. Osaka places in a Tokyo vlog) are placed in their own city but
+get their confidence halved, so the review screen can flag them.
+
+Try it without the server: `python -m app.services.video_import "<youtube-url>" Tokyo`
 
 **Demo trip ID:** `t_demo0001` (Tokyo, 30 Dec 2026 to 2 Jan 2027, 2 travellers, GBP).
 

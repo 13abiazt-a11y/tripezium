@@ -56,3 +56,18 @@ CREATE TABLE IF NOT EXISTS fx_rates (
 );
 SELECT create_hypertable('fx_rates', 'time', if_not_exists => TRUE);
 CREATE INDEX IF NOT EXISTS fx_rates_pair_time_idx ON fx_rates (base, quote, time DESC);
+
+-- Video import (Person D). Caches so pre-imported demo content survives restarts and redeploys.
+CREATE TABLE IF NOT EXISTS import_cache (
+  cache_key  TEXT PRIMARY KEY,      -- "youtube:<id>" | "tiktok:<id>" | "text:<sha>" | "images:<sha>"
+  places     JSONB NOT NULL,        -- places straight from Gemini, before geocoding
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE TABLE IF NOT EXISTS geocode_cache (
+  query        TEXT NOT NULL,       -- lower-cased Nominatim query
+  country_code TEXT NOT NULL DEFAULT '',  -- '' = no country filter
+  result       JSONB,               -- {"lat","lng","country_code"}; NULL = Nominatim found nothing
+  created_at   TIMESTAMPTZ NOT NULL DEFAULT now(),
+  PRIMARY KEY (query, country_code)
+);

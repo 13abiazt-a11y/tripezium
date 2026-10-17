@@ -74,3 +74,20 @@ fx_rates = Table(
     Column("rate", Float, nullable=False),
     Column("source", Text, nullable=False),
 )
+
+
+class ImportCacheRow(Base):
+    __tablename__ = "import_cache"
+
+    cache_key: Mapped[str] = mapped_column(Text, primary_key=True)
+    places: Mapped[list[dict[str, Any]]] = mapped_column(JSONB)
+    created_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class GeocodeCacheRow(Base):
+    __tablename__ = "geocode_cache"
+
+    query: Mapped[str] = mapped_column(Text, primary_key=True)
+    country_code: Mapped[str] = mapped_column(Text, primary_key=True, default="")
+    result: Mapped[dict[str, Any] | None] = mapped_column(JSONB)
+    created_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
