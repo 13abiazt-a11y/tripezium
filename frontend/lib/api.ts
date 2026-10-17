@@ -20,8 +20,10 @@ export class ApiError extends Error {
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
   let res: Response
+  // JSON by default; for uploads (FormData) the browser must set the multipart header itself.
+  const json = !(init?.body instanceof FormData)
   try {
-    res = await fetch(BASE + path, { ...init, headers: { "Content-Type": "application/json", ...init?.headers } })
+    res = await fetch(BASE + path, { ...init, headers: { ...(json ? { "Content-Type": "application/json" } : {}), ...init?.headers } })
   } catch {
     throw new ApiError(0, "network", "Can't reach the server. Check your connection and try again.")
   }
@@ -235,4 +237,73 @@ export async function getItinerary(tripId: string): Promise<Itinerary | null> {
 /** Plan the trip with Gemini. Slow (roughly 25-60 s): show a loading state. */
 export async function generateItinerary(tripId: string): Promise<Itinerary> {
   return toItinerary(await request<ApiItinerary>(`/trips/${tripId}/itinerary`, send("POST")))
+}
+
+// --- Imports (D's endpoints): link / caption / screenshots -> background job -> places --------
+
+type ApiImportJob = {
+  jobId: string
+  status: "pending" | "running" | "done" | "failed"
+  platform: string // youtube | tiktok | text | screenshot
+  places: ApiPlace[]
+  error?: string | null
+  message?: string | null // safe to show (also set on some finished jobs, e.g. TikTok slideshows)
+}
+
+export type ImportResult = { places: Place[]; message: string | null }
+
+export function startLinkImport(link: string, tripId: string) {
+  return request<ApiImportJob>("/imports", send("POST", { link, tripId }))
+}
+
+export function startTextImport(text: string, tripId: string) {
+  return request<ApiImportJob>("/imports/text", send("POST", { text, tripId }))
+}
+
+export function startScreenshotImport(files: File[], tripId: string) {
+  const form = new FormData()
+  for (const f of files) form.append("files", f)
+  form.append("tripId", tripId)
+  return request<ApiImportJob>("/imports/images", { method: "POST", body: form })
+}
+
+const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms))
+
+/** Poll a job every 2 s until it finishes. Videos can take a minute or two. */
+export async function waitForImport(job: ApiImportJob, timeoutMs = 4 * 60_000): Promise<ImportResult> {
+  const until = Date.now() + timeoutMs
+  while (job.status === "pending" || job.status === "running") {
+    if (Date.now() > until) throw new ApiError(504, "import_timeout", "That's taking too long. Try pasting the caption instead.")
+    await sleep(2000)
+    job = await request<ApiImportJob>(`/imports/${job.jobId}`)
+  }
+  if (job.status === "failed") {
+    throw new ApiError(422, job.error ?? "import_failed", job.message ?? "We couldn't read that. Try pasting the caption instead.")
+  }
+  return { places: job.places.map(toPlace), message: job.message ?? null }
+}
+
+/** Places the user imported (not the stops Gemini added): those come with a confidence score. */
+export async function getImportedPlaces(tripId: string): Promise<Place[]> {
+  return (await getPlaces(tripId)).filter((p) => p.confidence !== null || !!p.sourceUrl)
+}
+
+/** Save the places the user ticked. The server then treats the old itinerary as out of date. */
+export async function savePlaces(tripId: string, places: Place[]): Promise<Place[]> {
+  const body = {
+    places: places.map((p) => ({
+      id: p.id,
+      name: p.name,
+      nameEnglish: p.nameEnglish,
+      category: p.category || null,
+      lat: p.lat,
+      lng: p.lng,
+      confidence: p.confidence,
+      sourceUrl: p.sourceUrl ?? null,
+      timestamp: p.timestamp ?? null,
+      tip: p.tip ?? null,
+    })),
+  }
+  const { places: saved } = await request<{ places: ApiPlace[] }>(`/trips/${tripId}/places`, send("POST", body))
+  return saved.map(toPlace)
 }
