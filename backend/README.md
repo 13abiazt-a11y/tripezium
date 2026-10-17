@@ -148,7 +148,7 @@ All JSON is camelCase. Errors are always `{ "error": "<code>", "message": "<text
 
 ## Credits
 
-FastAPI, Uvicorn, Pydantic, pydantic-settings, SQLAlchemy, psycopg, httpx, Tiger Data / TimescaleDB,
-Nominatim / OpenStreetMap (geocoding), Google Gemini API (`google-genai`), Nager.Date (public holidays),
-Google Places API (New) (opening hours only),
-Frankfurter (ECB exchange rates). (Full list added as the build progresses.)
+FastAPI, Uvicorn, Pydantic, pydantic-settings, SQLAlchemy, psycopg, httpx, python-multipart, pytest,
+Google Gemini API (`google-genai`), Tiger Data / TimescaleDB, Nominatim / OpenStreetMap (geocoding),
+Nager.Date (public holidays), Google Places API (New) (opening hours only), Frankfurter (ECB exchange rates),
+Vultr (hosting), Caddy (HTTPS). See also the project README.

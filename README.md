@@ -90,18 +90,48 @@ Wise's product pillars are transparency, convenience, price, speed and coverage.
 | Layer | Choice |
 |---|---|
 | Frontend | _[e.g. React + Vite]_ |
-| Backend | _[e.g. FastAPI]_ |
+| Backend | Python, FastAPI + Uvicorn, Pydantic, SQLAlchemy + psycopg ([details](backend/README.md)) |
 | Database | Tiger Data (PostgreSQL + time-series) |
 | AI | Google Gemini API (structured JSON output, multimodal) |
 | Voice | ElevenLabs speech-to-text + text-to-speech |
 | Maps | Leaflet + OpenStreetMap |
 | Weather | Open-Meteo (forecast + historical climate) |
 | Public holidays | Nager.Date |
-| FX rates | _[Wise sandbox API if available, otherwise a public rates API]_ |
-| Hosting | Vultr |
+| FX rates | Frankfurter (European Central Bank reference rates), stored in a Tiger Data hypertable, with a hardcoded fallback |
+| Opening hours | Google Places API (New), used only for weekly opening hours |
+| Geocoding | Nominatim (OpenStreetMap) |
+| Hosting | Vultr (Ubuntu VM, systemd), Caddy in front for HTTPS |
 | Domain | GoDaddy Registry |
 
 ---
+
+## How we used Gemini
+
+Gemini plans every itinerary, and we treat its output as **structured data, not text**. Each request sends a
+Pydantic response schema, so Gemini returns JSON with a date, start time, duration, place, local cost and
+opening-hours status for every stop. Our code then validates it: exact trip dates, real place IDs, 24-hour times,
+ISO currency codes. If anything is wrong, it retries once with the problems listed. The prompt carries the facts
+that matter: each date's weekday, the destination's public holidays (from Nager.Date), and guidance on weekly and
+seasonal closures, so on 1 Jan in Japan it suggests hatsumōde instead of a closed museum. The places users import
+from TikTok and YouTube go in as a clearly delimited **data block** that Gemini is told never to take instructions
+from, with delimiter text stripped first, as a prompt-injection guard. Gemini only estimates **local costs per
+person**; currency conversion and every total are done in code with exact decimals. After generation, each stop is
+checked against its real weekly opening hours. Anything closed, or any saved place Gemini left out, goes back for
+**one revision pass**. Gemini is also multimodal in our import flow: it reads videos, screenshots and captions and
+extracts the places in them. Because free-tier quota is per model, calls fall back across Gemini Flash models when
+one runs out of quota. Itinerary generation also falls back when a model is overloaded, within a per-request time
+limit, so it answers or says it's busy rather than hanging.
+
+## How we used Tiger Data
+
+Tiger Data (PostgreSQL with TimescaleDB) is our only database. Trips, the user's places and the AI-suggested stops
+are relational tables. Each generated itinerary is stored as one JSONB document in exactly the shape the front end
+receives, so it's always read and written whole. The TimescaleDB feature is **FX history**: `fx_rates` is a
+**hypertable**. Every exchange rate we fetch is stored with its timestamp and source, indexed by currency pair and
+time. That makes "latest GBP→JPY rate" a fast lookup (used as a 6-hour cache in front of the rates API), and builds
+up a history of rates over time: the data needed to show how currency moves change a trip's cost. Tiger Data also caches
+public holidays, video-import results and geocoding lookups, so pre-imported demo content survives redeploys and
+doesn't spend AI quota twice.
 
 ## Getting started
 
@@ -124,7 +154,25 @@ FX_API_KEY=
 
 > Never commit `.env`. API keys stay local.
 
-_[Add install and run commands for frontend and backend once the stack is set.]_
+### Back end
+
+Python 3.11+. Full details (environment variables, deploy, endpoints, design notes) are in [backend/README.md](backend/README.md).
+
+```bash
+cd backend
+python -m venv .venv
+source .venv/bin/activate          # Windows: .venv\Scripts\activate
+pip install -r requirements.txt
+cp .env.example .env               # DATABASE_URL, GEMINI_API_KEY (+ optional GOOGLE_MAPS_API_KEY)
+python apply_schema.py             # creates the tables and the fx_rates hypertable
+python seed_demo.py                # demo trip t_demo0001, with its itinerary
+uvicorn app.main:app --reload --port 8000    # API docs at http://localhost:8000/docs
+python -m pytest -q                # tests
+```
+
+### Front end
+
+_[Add install and run commands for the front end.]_
 
 ---
 
@@ -167,7 +215,23 @@ Built with:
 - [Open-Meteo](https://open-meteo.com/)
 - [Nager.Date](https://date.nager.at/)
 - [TikTok oEmbed](https://developers.tiktok.com/doc/embed-videos/)
-- _[Add every other framework/library used]_
+
+Back end:
+- [FastAPI](https://fastapi.tiangolo.com/) and [Uvicorn](https://www.uvicorn.org/)
+- [Pydantic](https://docs.pydantic.dev/) and [pydantic-settings](https://docs.pydantic.dev/latest/concepts/pydantic_settings/)
+- [SQLAlchemy](https://www.sqlalchemy.org/) and [psycopg](https://www.psycopg.org/)
+- [TimescaleDB](https://www.timescale.com/) (on Tiger Data)
+- [httpx](https://www.python-httpx.org/)
+- [python-multipart](https://github.com/Kludex/python-multipart) (screenshot uploads)
+- [google-genai](https://github.com/googleapis/python-genai) (Gemini Python SDK)
+- [Google Places API (New)](https://developers.google.com/maps/documentation/places/web-service/op-overview) (opening hours only)
+- [Nominatim](https://nominatim.org/) (OpenStreetMap geocoding)
+- [Frankfurter](https://frankfurter.dev/) (European Central Bank exchange rates)
+- [Caddy](https://caddyserver.com/) (HTTPS reverse proxy)
+- [pytest](https://docs.pytest.org/)
+
+Front end:
+- _[Add every framework/library used]_
 
 ## Team
 
