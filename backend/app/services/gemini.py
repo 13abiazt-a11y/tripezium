@@ -29,6 +29,7 @@ CATEGORIES = [
 
 _HHMM = re.compile(r"^([01]\d|2[0-3]):[0-5]\d$")
 _CURRENCY = re.compile(r"^[A-Z]{3}$")
+_DELIMITERS = re.compile(r"<<<|>>>|SAVED_PLACES_DATA", re.IGNORECASE)
 
 
 # --- What Gemini returns (before our post-processing) ------------------------
@@ -52,6 +53,8 @@ class GItem(BaseModel):
     estimatedCost: float
     currency: str
     status: Literal["ok", "check_hours", "closed"]
+    placeLat: float | None  # only for saved places that came without coordinates
+    placeLng: float | None
 
 
 class GDay(BaseModel):
@@ -70,6 +73,13 @@ def trip_dates(trip: TripRow) -> list[dt.date]:
     return [trip.start_date + dt.timedelta(days=i) for i in range(n)]
 
 
+def clean(text: str | None, limit: int = 300) -> str | None:
+    """Imported text is untrusted: strip our block delimiters so it can't break out of the data block."""
+    if text is None:
+        return None
+    return _DELIMITERS.sub("", text)[:limit]
+
+
 def build_prompt(trip: TripRow, places: list[PlaceRow], holidays: list[Holiday] = ()) -> str:
     dates = trip_dates(trip)
     currency = trip.local_currency or "the destination's local currency (ISO 4217 code)"
@@ -79,8 +89,8 @@ def build_prompt(trip: TripRow, places: list[PlaceRow], holidays: list[Holiday] 
     holiday_lines = "\n".join(f"- {h.date.isoformat()} ({h.date:%A}): {h.name}" for h in holidays) or "- none"
 
     places_data = json.dumps([
-        {"id": p.id, "name": p.name, "nameEnglish": p.name_english, "category": p.category,
-         "lat": p.lat, "lng": p.lng, "tip": p.tip}
+        {"id": p.id, "name": clean(p.name, 200), "nameEnglish": clean(p.name_english, 200),
+         "category": clean(p.category, 40), "lat": p.lat, "lng": p.lng, "tip": clean(p.tip)}
         for p in places
     ], ensure_ascii=False, indent=1)
 
@@ -106,8 +116,8 @@ OPENING HOURS AND CLOSURES (important)
 
 RULES
 1. Return exactly one entry in "days" per date listed above, in the same order, using those exact dates (YYYY-MM-DD).
-2. The user's SAVED PLACES (below) are what they actually want to do. Prioritise them: include as many as reasonably fit, on sensible days. Reference a saved place with its "id" as "placeId" and set "newPlace" to null.
-3. For any other stop, set "placeId" to null and fill "newPlace" with a real, specific place: "name" in the local language, "nameEnglish", "category" (one of: {", ".join(CATEGORIES)}), and approximate "lat"/"lng".
+2. The user's SAVED PLACES (below) are what they actually want to do. Prioritise them: include as many as reasonably fit, on sensible days. Reference a saved place with its "id" as "placeId" and set "newPlace" to null. If that saved place has "lat"/"lng" null, put its approximate coordinates in "placeLat"/"placeLng"; otherwise set both to null.
+3. For any other stop, set "placeId" to null and fill "newPlace" with a real, specific place: "name" in the local language, "nameEnglish", "category" (one of: {", ".join(CATEGORIES)}), and approximate "lat"/"lng". Set "placeLat"/"placeLng" to null.
 4. Every item has exactly one of "placeId" or "newPlace"; never both, never neither.
 5. "time" is the start time, 24-hour HH:MM. Every item must start and finish within {day_start} to {day_end}. Leave realistic travel time between stops and group nearby places on the same day. Include meals.
 6. "estimatedCost" is the typical cost PER PERSON in {currency}, as a plain number (entry fee, or a typical meal for one). Free places are 0. "currency" is the ISO 4217 code, e.g. "{trip.local_currency or 'JPY'}". Do not convert currencies.
@@ -175,14 +185,17 @@ def _call(prompt: str) -> str:
     return resp.text or ""
 
 
-def fix_closures_prompt(previous: GItinerary, closed: list[str]) -> str:
-    return (
-        "\n\nCURRENT ITINERARY (JSON):\n" + previous.model_dump_json()
-        + "\n\nThese stops are CLOSED at their scheduled time, according to their opening hours:\n- "
-        + "\n- ".join(closed)
-        + "\nReturn the full itinerary with each of these moved to a day and time when it is open, or replaced "
-          "with a similar place that is open. Keep every other item the same unless it has to move to make room."
-    )
+def fix_prompt(previous: GItinerary, closed: list[str], missing: list[str]) -> str:
+    out = "\n\nCURRENT ITINERARY (JSON):\n" + previous.model_dump_json() + "\n\nREVISE IT:"
+    if closed:
+        out += ("\n\nThese stops are CLOSED at their scheduled time, according to their opening hours:\n- "
+                + "\n- ".join(closed)
+                + "\nMove each to a day and time when it is open, or replace it with a similar place that is open.")
+    if missing:
+        out += ("\n\nThese SAVED PLACES are missing, and the user specifically wants them:\n- "
+                + "\n- ".join(missing)
+                + "\nAdd them (by placeId) where they fit best, replacing less important suggested stops if needed.")
+    return out + "\n\nReturn the full itinerary. Keep every other item the same unless it has to move to make room."
 
 
 def generate_plan(
@@ -191,10 +204,11 @@ def generate_plan(
     holidays: list[Holiday] = (),
     previous: GItinerary | None = None,
     closed: list[str] | None = None,
+    missing: list[str] | None = None,
 ) -> GItinerary:
     """Call Gemini; on an invalid response retry once with the problems appended. 502 if still bad.
 
-    With `previous` + `closed`, asks Gemini to revise `previous` so the listed stops aren't closed.
+    With `previous`, asks Gemini to revise it: move/replace `closed` stops and add `missing` saved places.
     """
     s = get_settings()
     if not (s.gemini_api_key and s.gemini_model):
@@ -202,8 +216,8 @@ def generate_plan(
 
     place_ids = {p.id for p in places}
     prompt = build_prompt(trip, places, holidays)
-    if previous is not None and closed:
-        prompt += fix_closures_prompt(previous, closed)
+    if previous is not None and (closed or missing):
+        prompt += fix_prompt(previous, closed or [], missing or [])
     feedback: list[str] = []  # problems with the model's last answer, sent back on the retry
 
     for attempt in (1, 2):

@@ -137,7 +137,7 @@ def test_place_bad_lat_rejected(client):
 def _fake_plan(imported_id: str) -> GItinerary:
     def it(time, **kw):
         return GItem(time=time, durationMins=60, note="n", estimatedCost=1000, currency="JPY", status="ok",
-                     **{"placeId": None, "newPlace": None, **kw})
+                     **{"placeId": None, "newPlace": None, "placeLat": None, "placeLng": None, **kw})
     new = GNewPlace(name="築地", nameEnglish="Tsukiji", category="Market", lat=35.66, lng=139.77)
     dates = ["2026-12-01", "2026-12-02", "2026-12-03", "2026-12-04"]
     return GItinerary(days=[
@@ -153,7 +153,7 @@ def test_generate_itinerary_stores_and_creates_ai_places(client, monkeypatch):
     imported = client.post(f"/trips/{trip_id}/places", json={"places": [{"name": "Senso-ji"}]}).json()["places"][0]
 
     seen = {}
-    def fake_generate(trip, places, holidays=(), previous=None, closed=None):
+    def fake_generate(trip, places, holidays=(), previous=None, closed=None, missing=None):
         seen["places"] = [p.id for p in places]
         return _fake_plan(imported["id"])
     monkeypatch.setattr(planner.gemini, "generate_plan", fake_generate)
@@ -216,7 +216,7 @@ def test_closed_stop_triggers_one_fix_pass_then_holiday_check(client, monkeypatc
 
     def it(time, **kw):
         return GItem(time=time, durationMins=60, note="", estimatedCost=0, currency="JPY", status="ok",
-                     **{"placeId": None, "newPlace": None, **kw})
+                     **{"placeId": None, "newPlace": None, "placeLat": None, "placeLng": None, **kw})
     market = GNewPlace(name="Market", nameEnglish="Market", category="market", lat=35.1, lng=139.1)
     def plan_with_museum_at(time):
         return GItinerary(days=[
@@ -227,7 +227,7 @@ def test_closed_stop_triggers_one_fix_pass_then_holiday_check(client, monkeypatc
         ])
 
     calls = []
-    def fake_generate(trip, places, holidays=(), previous=None, closed=None):
+    def fake_generate(trip, places, holidays=(), previous=None, closed=None, missing=None):
         calls.append(closed)
         return plan_with_museum_at("09:00" if previous is None else "12:00")
     monkeypatch.setattr(planner.gemini, "generate_plan", fake_generate)
@@ -245,3 +245,54 @@ def test_closed_stop_triggers_one_fix_pass_then_holiday_check(client, monkeypatc
 def gemini_date(i):
     import datetime as dt
     return dt.date(2026, 12, 1) + dt.timedelta(days=i)
+
+
+@needs_db
+def test_missing_saved_place_is_added_and_gets_coordinates(client, monkeypatch):
+    """Gemini leaves out one of two saved places -> one fix pass asks for it. A saved place that came
+    without coordinates gets Gemini's approximate ones, so it can go on the map."""
+    trip_id = client.post("/trips", json=TRIP_BODY).json()["id"]
+    a, b = client.post(f"/trips/{trip_id}/places", json={"places": [
+        {"name": "Senso-ji", "category": "temple"},                       # no coordinates
+        {"name": "Golden Gai", "category": "nightlife", "lat": 35.694, "lng": 139.705},
+    ]}).json()["places"]
+
+    def it(time, **kw):
+        return GItem(time=time, durationMins=60, note="", estimatedCost=0, currency="JPY", status="ok",
+                     **{"placeId": None, "newPlace": None, "placeLat": None, "placeLng": None, **kw})
+    filler = GNewPlace(name="Park", nameEnglish="Park", category="park", lat=35.0, lng=139.0)
+    def make_plan(include_b):
+        first = [it("09:00", placeId=a["id"], placeLat=35.7148, placeLng=139.7967)]
+        if include_b:
+            first.append(it("19:00", placeId=b["id"]))
+        rest = [GDay(date=d, items=[it("10:00", newPlace=filler)]) for d in ["2026-12-02", "2026-12-03", "2026-12-04"]]
+        return GItinerary(days=[GDay(date="2026-12-01", items=first), *rest])
+
+    calls = []
+    def fake_generate(trip, places, holidays=(), previous=None, closed=None, missing=None):
+        calls.append(missing)
+        return make_plan(include_b=previous is not None)
+    monkeypatch.setattr(planner.gemini, "generate_plan", fake_generate)
+
+    data = client.post(f"/trips/{trip_id}/itinerary").json()
+    assert calls[0] is None and calls[1] == [f"Golden Gai (placeId {b['id']})"]
+    used = [i["placeId"] for i in data["days"][0]["items"]]
+    assert used == [a["id"], b["id"]]                     # both saved places, with their own IDs
+
+    with _session_factory()() as db:
+        senso = db.get(PlaceRow, a["id"])
+        assert (senso.lat, senso.lng) == (35.7148, 139.7967)
+        assert senso.origin == "import"
+
+
+@needs_db
+def test_all_saved_places_used_means_no_extra_call(client, monkeypatch):
+    trip_id = client.post("/trips", json=TRIP_BODY).json()["id"]
+    imported = client.post(f"/trips/{trip_id}/places", json={"places": [{"name": "Senso-ji"}]}).json()["places"][0]
+    calls = []
+    def fake_generate(trip, places, holidays=(), previous=None, closed=None, missing=None):
+        calls.append(1)
+        return _fake_plan(imported["id"])
+    monkeypatch.setattr(planner.gemini, "generate_plan", fake_generate)
+    assert client.post(f"/trips/{trip_id}/itinerary").status_code == 200
+    assert len(calls) == 1

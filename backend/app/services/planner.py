@@ -22,12 +22,24 @@ log = logging.getLogger("app.planner")
 Verdicts = list[list[str | None]]
 
 
+def _valid_coords(lat: float | None, lng: float | None) -> bool:
+    return lat is not None and lng is not None and -90 <= lat <= 90 and -180 <= lng <= 180
+
+
 def _stop(item: gemini.GItem, imported: dict[str, PlaceRow]) -> hours.Stop:
     if item.placeId is not None:
         p = imported[item.placeId]
+        if p.lat is None and _valid_coords(item.placeLat, item.placeLng):
+            return hours.Stop(p.name, item.placeLat, item.placeLng)  # Gemini placed it for us
         return hours.Stop(p.name, p.lat, p.lng)
     np = item.newPlace
     return hours.Stop(np.name, np.lat, np.lng)
+
+
+def missing_saved_places(plan: gemini.GItinerary, imported: dict[str, PlaceRow]) -> list[str]:
+    """Imported places (what the user actually wants) that Gemini left out, as lines for the fix prompt."""
+    used = {i.placeId for d in plan.days for i in d.items}
+    return [f"{p.name_english or p.name} (placeId {pid})" for pid, p in imported.items() if pid not in used]
 
 
 def _name(item: gemini.GItem, imported: dict[str, PlaceRow]) -> str:
@@ -96,6 +108,10 @@ def _to_itinerary(
         for g, verdict in zip(gday.items, day_verdicts):
             place_id = g.placeId
             category = imported[place_id].category if place_id in imported else None
+            if place_id in imported:
+                saved = imported[place_id]
+                if saved.lat is None and _valid_coords(g.placeLat, g.placeLng):
+                    saved.lat, saved.lng = g.placeLat, g.placeLng  # imported without coords: Gemini placed it
             if g.newPlace is not None:
                 np = g.newPlace
                 place_id = new_id("p")
@@ -152,15 +168,22 @@ def build_itinerary(db: Session, trip: TripRow) -> Itinerary:
 
     plan = _sort(gemini.generate_plan(trip, imported_rows, holidays))
     verdicts, closed = check_hours(trip, plan, imported)
+    missing = missing_saved_places(plan, imported)
+    log.info("trip=%s saved places used: %d/%d", trip.id, len(imported) - len(missing), len(imported))
+    # Only chase missing places if they could plausibly fit (~3 saved places a day); otherwise
+    # Gemini is right to leave some out, and a second call would just add latency.
+    if len(imported) > 3 * len(plan.days):
+        missing = []
 
-    if closed:  # one fix pass; if it fails, keep the first plan and show those items as closed
-        log.info("trip=%s %d closed stops, asking Gemini to fix: %s", trip.id, len(closed), closed[:3])
+    if closed or missing:  # one fix pass; if it fails, keep the first plan and show those items as they are
+        log.info("trip=%s fix pass: %d closed, %d missing: %s", trip.id, len(closed), len(missing), (closed + missing)[:3])
         try:
-            plan = _sort(gemini.generate_plan(trip, imported_rows, holidays, previous=plan, closed=closed))
+            plan = _sort(gemini.generate_plan(trip, imported_rows, holidays, previous=plan, closed=closed, missing=missing))
             verdicts, closed = check_hours(trip, plan, imported)
-            log.info("trip=%s after fix: %d closed stops remain", trip.id, len(closed))
+            log.info("trip=%s after fix: %d closed, %d saved places still missing",
+                     trip.id, len(closed), len(missing_saved_places(plan, imported)))
         except ApiError as e:
-            log.warning("trip=%s closure fix failed (%s); keeping first plan", trip.id, e.code)
+            log.warning("trip=%s fix pass failed (%s); keeping first plan", trip.id, e.code)
 
     itinerary, ai_categories = _to_itinerary(db, trip, plan, verdicts, imported)
     categories = {pid: p.category for pid, p in imported.items()} | ai_categories
