@@ -1,0 +1,25 @@
+"""All configuration comes from environment variables (or backend/.env locally)."""
+from functools import lru_cache
+
+from pydantic_settings import BaseSettings, SettingsConfigDict
+
+
+class Settings(BaseSettings):
+    model_config = SettingsConfigDict(env_file=".env", extra="ignore")
+
+    database_url: str = ""
+    gemini_api_key: str = ""
+    gemini_model: str = ""
+    fx_source: str = "public"  # wise | public
+    wise_api_token: str = ""
+    frontend_origins: str = "http://localhost:3000"
+    nominatim_user_agent: str = "iku-trip-planner/1.0"
+
+    @property
+    def cors_origins(self) -> list[str]:
+        return [o.strip() for o in self.frontend_origins.split(",") if o.strip()]
+
+
+@lru_cache
+def get_settings() -> Settings:
+    return Settings()
