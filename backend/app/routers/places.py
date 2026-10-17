@@ -22,6 +22,20 @@ def place_out(row) -> Place:
     )
 
 
+@router.get("", response_model=PlacesOut)
+def list_places(trip_id: str, db: Session = Depends(get_db)) -> PlacesOut:
+    """All places for the trip: the user's imported ones first, then the stops Gemini added.
+
+    The front end uses this to resolve itinerary `placeId`s into names and map pins.
+    """
+    get_trip_or_404(db, trip_id)
+    rows = db.scalars(
+        select(PlaceRow).where(PlaceRow.trip_id == trip_id)
+        .order_by((PlaceRow.origin != "import"), PlaceRow.name)
+    )
+    return PlacesOut(places=[place_out(r) for r in rows])
+
+
 @router.post("", response_model=PlacesOut)
 def save_places(trip_id: str, body: PlacesIn, db: Session = Depends(get_db)) -> PlacesOut:
     """Upsert the places the user confirmed after import (origin='import')."""

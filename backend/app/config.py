@@ -10,13 +10,10 @@ class Settings(BaseSettings):
 
     database_url: str = ""
     gemini_api_key: str = ""
-    gemini_model: str = "gemini-3.8-flash"  # 2.5-flash is closed to new API keys
-    # Tried in order when a model hits its quota (429). Free-tier quotas are per model, ~20 requests/day.
-    gemini_fallback_models: str = "gemini-3.7-flash,gemini-3.6-flash,gemini-3.5-flash"
-    fx_source: str = "public"  # wise | public
-    wise_api_token: str = ""
+    gemini_model: str = ""
     frontend_origins: str = "http://localhost:3000"
     nominatim_user_agent: str = "iku-trip-planner/1.0"
+    google_maps_api_key: str = ""  # optional; used ONLY for opening hours
 
     @field_validator("gemini_model", "gemini_fallback_models", "nominatim_user_agent", mode="before")
     @classmethod
