@@ -227,6 +227,7 @@ Back end:
 - [google-genai](https://github.com/googleapis/python-genai) (Gemini Python SDK)
 - [Google Places API (New)](https://developers.google.com/maps/documentation/places/web-service/op-overview) (opening hours only)
 - [Nominatim](https://nominatim.org/) (OpenStreetMap geocoding)
+- [GeoNames](https://www.geonames.org/) city data, [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/) (via [all-the-cities](https://github.com/zeke/all-the-cities); also used by the front end's city dropdown)
 - [Frankfurter](https://frankfurter.dev/) (European Central Bank exchange rates)
 - [Caddy](https://caddyserver.com/) (HTTPS reverse proxy)
 - [pytest](https://docs.pytest.org/)

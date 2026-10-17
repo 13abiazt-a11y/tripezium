@@ -19,6 +19,14 @@ flags public-holiday closures, and costs every item in local and home currency.
 - Imported places with no coordinates get Gemini's approximate ones, so they can go on the map.
 - Stops Gemini adds itself are saved as places with `origin='ai'` and replaced on each regeneration.
 
+## Only real cities
+
+Route cities are checked against the same per-country lists the front end's dropdown uses
+(`frontend/public/cities/<CC>.json`: [GeoNames](https://www.geonames.org/) places with 1,000+ people, plus popular
+spots). Accents and case are ignored and the list's spelling is saved ("kyoto" -> "Kyoto"). Anything else is
+rejected with 422 `unknown_city`, so a stale draft or a direct API call can't create a trip to "Atlantis".
+Countries without a list aren't blocked.
+
 ## How money is handled
 
 - **Gemini estimates local costs per person. Code does all conversion and totals** (`services/budget.py`,
@@ -83,8 +91,10 @@ Error codes the front end may see (all `{ "error", "message" }`; `message` is sa
 
 | Status | `error` | Meaning |
 |---|---|---|
+| 403 | `read_only` | Tried to change the demo trip |
 | 404 | `not_found`, `no_itinerary` | Unknown trip, or no itinerary generated yet |
 | 422 | `validation_error` | Bad request body; `message` says which field |
+| 422 | `unknown_city` | A route city isn't a real place in that country (not in the dropdown's list) |
 | 429 | `rate_limited` | Too many requests from this IP; try again shortly |
 | 502 | `generation_failed` | Gemini returned an invalid itinerary twice |
 | 503 | `gemini_quota`, `gemini_busy` | Gemini out of quota, or too slow/overloaded right now |
@@ -128,6 +138,7 @@ nothing to build. Everything is in `backend/deploy/`.
 | `GET /health` | `{ "status": "ok", "db": "ok" }`, or 503 with `"status": "degraded"` if the DB is unreachable |
 | `POST /trips` | Body: Trip without `id`, optionally with a multi-city `route` (below). Returns 201 + full Trip. Without a route, resolves country + currency via Nominatim |
 | `GET /trips/{id}` | Returns Trip |
+| `PATCH /trips/{id}` | Send only the fields that changed (e.g. `route` after the user edits it). Validated like a new trip. Changing anything except `travellers` deletes the stored itinerary, so the next `GET /itinerary` returns `no_itinerary` and the front end regenerates. The demo trip is read-only (403) |
 | `GET /trips/{id}/places` | `{ "places": [Place] }`: imported places first, then stops Gemini added. Use it to turn itinerary `placeId`s into names and map pins (re-fetch after each generation) |
 | `POST /trips/{id}/places` | Body `{ "places": [Place] }`. Missing `id`s are assigned. Returns `{ "places": [Place] }` |
 | `POST /trips/{id}/itinerary` | Generates (or regenerates) and stores the itinerary with Gemini. **Takes ~20-30s**: show a loading state. 502 `generation_failed` if Gemini fails twice |
@@ -153,4 +164,4 @@ All JSON is camelCase. Errors are always `{ "error": "<code>", "message": "<text
 FastAPI, Uvicorn, Pydantic, pydantic-settings, SQLAlchemy, psycopg, httpx, python-multipart, pytest,
 Google Gemini API (`google-genai`), Tiger Data / TimescaleDB, Nominatim / OpenStreetMap (geocoding),
 Nager.Date (public holidays), Google Places API (New) (opening hours only), Frankfurter (ECB exchange rates),
-Vultr (hosting), Caddy (HTTPS). See also the project README.
+Vultr (hosting), Caddy (HTTPS), GeoNames city data (CC BY 4.0, via all-the-cities; shared with the front end). See also the project README.
