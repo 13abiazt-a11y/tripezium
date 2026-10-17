@@ -1,19 +1,34 @@
 "use client"
 
 import { useCallback, useEffect, useRef, useState } from "react"
-import { CalendarHeart, Clock, Compass, Lightbulb, Loader2, MapPin, RefreshCw, Wallet } from "lucide-react"
+import { CalendarHeart, Clock, Compass, Lightbulb, Loader2, RefreshCw, Undo2, Wallet } from "lucide-react"
 
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
+import { ListenButton } from "@/components/ListenButton"
 import { PageShell } from "@/components/page-shell"
 import { RouteEditor } from "@/components/route-editor"
+import { categoryColour, TripMap, type MapCity, type MapMode, type MapStop } from "@/components/trip-map"
+import { VoiceEditButton } from "@/components/VoiceEditButton"
 import { DEMO_TRIP_ID, generateItinerary, getItinerary, getPlaces, getTrip, syncTrip } from "@/lib/api"
 import { countryName, flagOf } from "@/lib/destinations"
 import { SHOW_COSTS } from "@/lib/flags"
+import { cityKey, distanceKm, useCityCoords } from "@/lib/geo"
 import { formatMoney } from "@/lib/money"
+import { narrateDay } from "@/lib/narration"
 import { addDays, daysBetween, planDays, recommendRoute } from "@/lib/route"
 import { loadTrip, saveTrip } from "@/lib/trip-store"
 import type { Itinerary, ItineraryItem, Money, Place, RouteStop, Trip } from "@/lib/types"
+import {
+  applyOverrides,
+  loadOverrides,
+  mergeChanges,
+  saveOverrides,
+  type EditableDay,
+  type EditableItem,
+  type Overrides,
+  type VoiceEditResult,
+} from "@/lib/voice-edits"
 
 function formatDay(date: string) {
   return new Date(date + "T00:00:00").toLocaleDateString(undefined, { weekday: "short", day: "numeric", month: "short" })
@@ -39,7 +54,27 @@ type ShownDay = {
   items: ItineraryItem[]
 }
 
-function Cost({ item }: { item: ItineraryItem }) {
+/** API items + their places → items with the place details inline (what voice edits and the map use). */
+function toEditable(items: ItineraryItem[], places: Map<string, Place>): EditableItem[] {
+  return items.map((i) => {
+    const p = places.get(i.placeId)
+    return {
+      time: i.time,
+      name: p?.nameEnglish ?? "Unknown place",
+      ...(p && p.name !== p.nameEnglish ? { localName: p.name } : {}),
+      category: p?.category ?? "activity",
+      durationMins: i.durationMins,
+      ...(i.note ? { note: i.note } : {}),
+      ...(p?.tip ? { tip: p.tip } : {}),
+      ...(i.cost ? { cost: i.cost } : {}),
+      ...(i.localCost ? { localCost: i.localCost } : {}),
+      ...(i.status ? { status: i.status } : {}),
+      ...(p && p.lat != null && p.lng != null && (p.lat || p.lng) ? { lat: p.lat, lng: p.lng } : {}),
+    }
+  })
+}
+
+function Cost({ item }: { item: EditableItem }) {
   if (!item.cost) return null
   if (item.cost.amount === 0) return <span className="font-medium text-foreground">Free</span>
   const local = item.localCost && item.localCost.currency !== item.cost.currency ? item.localCost : null
@@ -65,6 +100,9 @@ export default function ItineraryPage() {
   const [error, setError] = useState("")
   const [routeChanged, setRouteChanged] = useState(false)
   const [active, setActive] = useState(0)
+  const [overrides, setOverrides] = useState<Overrides>({})
+  const [mapMode, setMapMode] = useState<MapMode>("day")
+  const [selectedStop, setSelectedStop] = useState<number | null>(null)
   const started = useRef(false) // dev Strict Mode runs effects twice: never ask Gemini twice
 
   const fail = (e: unknown) => {
@@ -82,6 +120,7 @@ export default function ItineraryPage() {
     const list = await getPlaces(tripId) // after generating: includes the stops Gemini added
     setPlaces(new Map(list.map((p) => [p.id, p])))
     setItinerary(it)
+    setOverrides(loadOverrides(tripId)) // voice changes made in this browser
     setPhase("ready")
   }, [])
 
@@ -141,13 +180,87 @@ export default function ItineraryPage() {
         return { ...p, ...d, city: p?.city ?? d.city ?? trip?.destination ?? "", country: p?.country ?? "" }
       })
     : planned.map((p) => ({ ...p, items: [] }))
+
+  // Voice changes (stored in this browser) on top of the plan from the API.
+  const baseDays: EditableDay[] = days.map((d, i) => ({
+    day: i + 1,
+    date: d.date,
+    city: d.city,
+    country: d.country,
+    items: toEditable(d.items, places),
+  }))
+  const { days: shown, edited } = applyOverrides(baseDays, overrides)
+
   const activeIndex = Math.min(active, Math.max(0, days.length - 1))
   const day = days[activeIndex]
-  const items = day?.items ?? []
+  const plan = shown[activeIndex]
+  const items = plan?.items ?? []
+  const isEdited = plan ? edited.has(plan.date) : false
+  const cityChanged = !!(day && plan && plan.city !== day.city)
 
   const perPerson = itinerary?.total
   const group = perPerson && trip ? { ...perPerson, amount: perPerson.amount * trip.travellers } : null
   const budget = trip?.budget.amount && group && trip.budget.currency === group.currency ? trip.budget.amount : null
+
+  // ---- map ----
+  // Cities in travel order (after voice changes), with how many days in each.
+  const segments: Omit<MapCity, "at">[] = []
+  shown.forEach((d, i) => {
+    const last = segments.at(-1)
+    if (last && last.city === d.city && last.country === d.country) last.days++
+    else segments.push({ city: d.city, country: d.country, days: 1, firstDay: i, active: false })
+  })
+  segments.forEach((s, i) => {
+    const next = segments[i + 1]?.firstDay ?? shown.length
+    s.active = activeIndex >= s.firstDay && activeIndex < next
+  })
+  const coords = useCityCoords(segments.filter((s) => s.city))
+  const centre = plan ? coords[cityKey(plan.city, plan.country)] : null
+  // A stop is placed if it has coordinates near its city (a location that's far
+  // away is treated as wrong and looked up again).
+  const placed = (it: EditableItem) =>
+    it.lat !== undefined && it.lng !== undefined && (!centre || distanceKm(centre, { lat: it.lat, lng: it.lng }) <= 120)
+  const unplaced = plan ? items.filter((it) => !placed(it) && it.name !== "Unknown place") : []
+  const placeCoords = useCityCoords(unplaced.map((it) => ({ city: plan!.city, country: plan!.country, place: it.name })))
+  const mapCities: MapCity[] = segments.map((s) => ({ ...s, at: coords[cityKey(s.city, s.country)] }))
+  const mapStops: MapStop[] = items.flatMap((it, i) => {
+    const at = placed(it) ? { lat: it.lat!, lng: it.lng! } : placeCoords[cityKey(plan!.city, plan!.country, it.name)]
+    return at ? [{ n: i + 1, name: it.name, category: it.category, lat: at.lat, lng: at.lng }] : []
+  })
+  const dayCity = plan ? { city: plan.city, at: centre } : null
+
+  const selectDay = (i: number) => {
+    setActive(i)
+    setSelectedStop(null)
+  }
+  const selectStop = (n: number) => {
+    setSelectedStop(n)
+    document.getElementById(`stop-${n}`)?.scrollIntoView({ behavior: "smooth", block: "nearest" })
+  }
+
+  // ---- voice changes ----
+  const voiceContext = () => ({
+    activeDay: activeIndex + 1,
+    travellers: trip?.travellers,
+    interests: trip?.interests,
+    dayStart: trip?.dayStart,
+    dayEnd: trip?.dayEnd,
+    days: shown.map(({ day, date, city, country, items }) => ({ day, date, city, country, items })),
+  })
+
+  const onVoiceEdit = (result: VoiceEditResult) => {
+    if (!result.changes.length || !trip) return
+    // TODO(A+C): send result.changes to the API so the server plan changes too.
+    const next = mergeChanges(baseDays, overrides, result.changes)
+    setOverrides(next)
+    saveOverrides(trip.id, next)
+    selectDay(Math.min(...result.changes.map((c) => c.day)) - 1) // show the change
+  }
+
+  const undoVoice = () => {
+    setOverrides({})
+    if (trip) saveOverrides(trip.id, {})
+  }
 
   return (
     <PageShell
@@ -162,10 +275,21 @@ export default function ItineraryPage() {
           : "Loading…"
       }
     >
-      {/* Map goes here (B: Leaflet) */}
-      <div className="mb-4 flex h-40 items-center justify-center rounded-xl bg-muted text-sm text-muted-foreground">
-        <MapPin className="mr-1.5 size-4" /> Map
-      </div>
+      {days.length ? (
+        <TripMap
+          mode={mapCities.length > 1 ? mapMode : "day"}
+          onModeChange={setMapMode}
+          stops={mapStops}
+          dayCity={dayCity}
+          cities={mapCities}
+          selected={selectedStop}
+          onSelectStop={selectStop}
+          onSelectCity={(firstDay) => {
+            selectDay(firstDay)
+            setMapMode("day")
+          }}
+        />
+      ) : null}
 
       {SHOW_COSTS && perPerson && group ? (
         <div className="mb-4 rounded-xl bg-card p-3 text-sm ring-1 ring-foreground/10">
@@ -211,14 +335,31 @@ export default function ItineraryPage() {
         </div>
       ) : null}
 
+      {phase === "ready" && days.length ? (
+        <VoiceEditButton
+          context={voiceContext}
+          onEdit={onVoiceEdit}
+          footer={
+            edited.size ? (
+              <button
+                onClick={undoVoice}
+                className="mt-2 inline-flex items-center gap-1 text-sm font-medium text-primary underline-offset-4 hover:underline"
+              >
+                <Undo2 className="size-3.5" /> Undo voice changes ({edited.size} {edited.size === 1 ? "day" : "days"})
+              </button>
+            ) : null
+          }
+        />
+      ) : null}
+
       <div className="-mx-4 mb-4 flex gap-2 overflow-x-auto px-4 pb-1" role="tablist">
-        {days.map((d, i) => (
+        {shown.map((d, i) => (
           <button
             key={d.date}
             role="tab"
             aria-selected={i === activeIndex}
-            onClick={() => setActive(i)}
-            className={`flex shrink-0 flex-col items-start rounded-2xl border px-4 py-1.5 text-left transition-colors ${
+            onClick={() => selectDay(i)}
+            className={`relative flex shrink-0 flex-col items-start rounded-2xl border px-4 py-1.5 text-left transition-colors ${
               i === activeIndex ? "border-primary bg-primary text-primary-foreground" : "border-border hover:bg-muted"
             }`}
           >
@@ -228,19 +369,30 @@ export default function ItineraryPage() {
             <span className="text-xs opacity-80">
               {d.country ? <span aria-hidden>{flagOf(d.country)} </span> : null}
               {d.city}
-              {d.holiday ? " · holiday" : ""}
+              {days[i]?.holiday ? " · holiday" : ""}
             </span>
+            {edited.has(d.date) ? (
+              <span className="absolute top-1.5 right-1.5 size-2 rounded-full bg-amber-400" aria-label="changed by voice" />
+            ) : null}
           </button>
         ))}
       </div>
 
-      {day && day.dayInCity && day.daysInCity ? (
-        <p className="mb-3 text-sm text-muted-foreground">
-          {day.city} · day {day.dayInCity} of {day.daysInCity}
-        </p>
+      {day && plan ? (
+        <div className="mb-3 flex items-center justify-between gap-2">
+          <p className="text-sm text-muted-foreground">
+            {cityChanged
+              ? `${plan.city} · instead of ${day.city}`
+              : day.dayInCity && day.daysInCity
+                ? `${plan.city} · day ${day.dayInCity} of ${day.daysInCity}`
+                : plan.city}
+            {isEdited ? " · changed by voice" : ""}
+          </p>
+          {phase === "ready" && items.length ? <ListenButton text={() => narrateDay(plan)} /> : null}
+        </div>
       ) : null}
 
-      {day?.holiday ? (
+      {day?.holiday && !cityChanged ? (
         <div className="mb-3 flex items-start gap-2 rounded-xl bg-secondary p-3 text-sm text-secondary-foreground">
           <CalendarHeart className="mt-0.5 size-4 shrink-0 text-primary" />
           <p>
@@ -250,7 +402,7 @@ export default function ItineraryPage() {
         </div>
       ) : null}
 
-      {day?.explore ? (
+      {day?.explore && !cityChanged ? (
         <div className="mb-3 flex items-start gap-2 rounded-xl bg-secondary p-3 text-sm text-secondary-foreground">
           <Compass className="mt-0.5 size-4 shrink-0 text-primary" />
           <p>
@@ -261,7 +413,7 @@ export default function ItineraryPage() {
         </div>
       ) : null}
 
-      {SHOW_COSTS && day?.total && items.length ? (
+      {SHOW_COSTS && day?.total && items.length && !isEdited ? (
         <p className="mb-3 inline-flex items-center gap-1.5 text-sm font-medium">
           <Wallet className="size-4 text-primary" /> About {formatMoney(day.total)} per person today
         </p>
@@ -290,41 +442,66 @@ export default function ItineraryPage() {
         </div>
       ) : items.length ? (
         <ol className="relative flex flex-col gap-3 border-l border-border pl-5">
-          {items.map((item) => {
-            const p = places.get(item.placeId)
-            return (
-              <li key={item.time + item.placeId} className="relative">
-                <span className="absolute top-4 -left-[26px] size-3 rounded-full border-2 border-background bg-primary" />
-                <div className="rounded-xl bg-card p-3 ring-1 ring-foreground/10">
-                  <div className="flex items-start justify-between gap-2">
-                    <div className="min-w-0">
-                      <p className="text-xs font-medium text-muted-foreground tabular-nums">{item.time}</p>
-                      <p className="font-medium">{p?.nameEnglish ?? "Unknown place"}</p>
-                      {p && p.name !== p.nameEnglish ? <p className="text-xs text-muted-foreground">{p.name}</p> : null}
-                    </div>
-                    <div className="flex shrink-0 flex-col items-end gap-1">
-                      {p?.category ? <Badge variant="secondary" className="capitalize">{p.category}</Badge> : null}
-                      <StatusBadge status={item.status} />
-                    </div>
+          {items.map((item, i) => (
+            <li key={`${item.time}-${item.name}-${i}`} id={`stop-${i + 1}`} className="relative scroll-mt-4">
+              <span
+                aria-hidden
+                style={{ background: categoryColour(item.category) }}
+                className="absolute top-3 -left-[31px] flex size-[22px] items-center justify-center rounded-full border-2 border-background text-[11px] font-semibold text-white"
+              >
+                {i + 1}
+              </span>
+              <div
+                role="button"
+                tabIndex={0}
+                aria-pressed={selectedStop === i + 1}
+                onClick={() => setSelectedStop(selectedStop === i + 1 ? null : i + 1)}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter" || e.key === " ") {
+                    e.preventDefault()
+                    setSelectedStop(i + 1)
+                  }
+                }}
+                className={`cursor-pointer rounded-xl bg-card p-3 transition-shadow outline-none focus-visible:ring-2 focus-visible:ring-ring ${
+                  selectedStop === i + 1 ? "ring-2 ring-primary" : "ring-1 ring-foreground/10"
+                }`}
+              >
+                <div className="flex items-start justify-between gap-2">
+                  <div className="min-w-0">
+                    <p className="text-xs font-medium text-muted-foreground tabular-nums">{item.time}</p>
+                    <p className="font-medium">{item.name}</p>
+                    {item.localName ? <p className="text-xs text-muted-foreground">{item.localName}</p> : null}
                   </div>
-                  <div className="mt-2 flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-muted-foreground">
-                    <span className="inline-flex items-center gap-1"><Clock className="size-3.5" />{formatDuration(item.durationMins)}</span>
-                    {item.note ? <span>{item.note}</span> : null}
-                    {SHOW_COSTS ? <Cost item={item} /> : null}
+                  <div className="flex shrink-0 flex-col items-end gap-1">
+                    {item.category ? (
+                      <Badge variant="secondary" className="capitalize">
+                        {item.category}
+                      </Badge>
+                    ) : null}
+                    <StatusBadge status={item.status} />
                   </div>
-                  {p?.tip ? (
-                    <p className="mt-2 flex items-start gap-1.5 rounded-lg bg-muted px-2 py-1.5 text-xs">
-                      <Lightbulb className="mt-px size-3.5 shrink-0" />{p.tip}
-                    </p>
-                  ) : null}
                 </div>
-              </li>
-            )
-          })}
+                <div className="mt-2 flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-muted-foreground">
+                  <span className="inline-flex items-center gap-1">
+                    <Clock className="size-3.5" />
+                    {formatDuration(item.durationMins)}
+                  </span>
+                  {item.note ? <span>{item.note}</span> : null}
+                  {SHOW_COSTS ? <Cost item={item} /> : null}
+                </div>
+                {item.tip ? (
+                  <p className="mt-2 flex items-start gap-1.5 rounded-lg bg-muted px-2 py-1.5 text-xs">
+                    <Lightbulb className="mt-px size-3.5 shrink-0" />
+                    {item.tip}
+                  </p>
+                ) : null}
+              </div>
+            </li>
+          ))}
         </ol>
       ) : (
         <div className="rounded-xl border border-dashed p-6 text-center text-sm text-muted-foreground">
-          {day ? `Nothing planned for ${day.city} on this day.` : "Nothing planned yet."}
+          {day ? `Nothing planned for ${plan?.city ?? day.city} on this day.` : "Nothing planned yet."}
         </div>
       )}
 
