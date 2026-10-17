@@ -1,16 +1,19 @@
-"""POST /imports starts a background job; GET /imports/{jobId} polls it.
+"""Import places from a link, pasted text or screenshots. Every route starts a background job;
+GET /imports/{jobId} polls it.
 
-Jobs and the per-video cache live in memory for now (like the M1 mocks).
+Jobs and the cache live in memory for now (like the M1 mocks).
 """
+import hashlib
 import logging
 import threading
+from collections.abc import Callable
 
-from fastapi import APIRouter, BackgroundTasks
+from fastapi import APIRouter, BackgroundTasks, File, Form, UploadFile
 
 from ..db import _session_factory
 from ..errors import ApiError, not_found
 from ..ids import new_id
-from ..schemas import ImportCreate, ImportJob, Place, PlaceIn
+from ..schemas import ImportCreate, ImportJob, ImportTextCreate, Place, PlaceIn
 from ..services import video_import
 from .trips import get_trip_or_404
 
@@ -19,8 +22,23 @@ log = logging.getLogger("app.imports")
 router = APIRouter(prefix="/imports", tags=["imports"])
 
 JOBS: dict[str, ImportJob] = {}
-CACHE: dict[str, list[PlaceIn]] = {}  # "youtube:<videoId>" -> places straight from Gemini
+CACHE: dict[str, list[PlaceIn]] = {}  # "youtube:<id>" / "tiktok:<id>" / "text:<sha>" -> places straight from Gemini
 _lock = threading.Lock()
+
+MAX_IMAGES = 10
+MAX_IMAGE_BYTES = 10 * 1024 * 1024
+IMAGE_TYPES = {"image/jpeg", "image/png", "image/webp", "image/heic", "image/heif"}
+
+SLIDESHOW_MESSAGE = ("This TikTok is a photo slideshow, so we could only read its caption and first slide. "
+                     "Upload screenshots of the other slides to get the rest.")
+NO_PLACES_MESSAGE = {
+    "text": "We couldn't find any places in that text. Try screenshots of the post instead.",
+    "screenshot": "We couldn't find any places in those screenshots. Try pasting the caption instead.",
+}
+NO_PLACES_DEFAULT = "We couldn't find any places in that. Try screenshots, or paste the caption instead."
+
+# prepare() -> (cache key, extract function, message to show with the finished job)
+Prepare = Callable[[], tuple[str, Callable[[], list[PlaceIn]], str | None]]
 
 
 def _with_ids(places: list[PlaceIn]) -> list[Place]:
@@ -33,13 +51,13 @@ def _update(job_id: str, **changes) -> None:
         JOBS[job_id] = JOBS[job_id].model_copy(update=changes)
 
 
-def _run_youtube(job_id: str, link: str, cache_key: str,
-                 destination: str | None, country_code: str | None) -> None:
+def _run(job_id: str, prepare: Prepare, destination: str | None, country_code: str | None) -> None:
     _update(job_id, status="running")
     try:
+        cache_key, extract, message = prepare()  # may hit the network (e.g. TikTok short links)
         places = CACHE.get(cache_key)
         if places is None:
-            places = video_import.extract_places_from_youtube(link, destination)
+            places = extract()
             CACHE[cache_key] = places  # raw Gemini output; geocoding is cached separately per query
         places = video_import.geocode_places(places, destination, country_code)
     except ApiError as exc:
@@ -48,41 +66,103 @@ def _run_youtube(job_id: str, link: str, cache_key: str,
     except Exception:
         log.exception("import job %s crashed", job_id)
         _update(job_id, status="failed", error="internal_error",
-                message="Something went wrong reading that video. Try pasting the caption instead.")
+                message="Something went wrong. Try screenshots, or paste the caption instead.")
         return
-    _update(job_id, status="done", places=_with_ids(places))
+    if not places:
+        _update(job_id, status="failed", error="no_places",
+                message=NO_PLACES_MESSAGE.get(JOBS[job_id].platform, NO_PLACES_DEFAULT))
+        return
+    _update(job_id, status="done", places=_with_ids(places), message=message)
 
 
-def _trip_context(trip_id: str) -> tuple[str, str | None]:
+def _trip_context(trip_id: str | None) -> tuple[str | None, str | None]:
     """(destination, country code) for the trip. Only touches the DB when a tripId is sent."""
+    if not trip_id:
+        return None, None
     with _session_factory()() as db:
         trip = get_trip_or_404(db, trip_id)
         return trip.destination, trip.country_code
 
 
+def _start(background: BackgroundTasks, platform: str, link: str | None, prepare: Prepare,
+           trip: tuple[str | None, str | None]) -> ImportJob:
+    job = ImportJob(job_id=new_id("j"), status="pending", platform=platform, link=link)
+    with _lock:
+        JOBS[job.job_id] = job
+    background.add_task(_run, job.job_id, prepare, *trip)
+    return job
+
+
+def _sha(*chunks: bytes) -> str:
+    h = hashlib.sha256()
+    for c in chunks:
+        h.update(hashlib.sha256(c).digest())  # hash of hashes, so chunk boundaries count
+    return h.hexdigest()[:32]
+
+
 @router.post("", response_model=ImportJob, status_code=202)
 def create_import(body: ImportCreate, background: BackgroundTasks) -> ImportJob:
-    destination, country_code = _trip_context(body.trip_id) if body.trip_id else (None, None)
     link = body.link.strip()
     platform = video_import.detect_platform(link)
-    job = ImportJob(job_id=new_id("j"), status="pending", platform=platform, link=link)
+    trip = _trip_context(body.trip_id)  # 404s an unknown trip before any job starts
 
     if platform == "youtube":
         video_id = video_import.youtube_video_id(link)
         if not video_id:
             raise ApiError(400, "bad_link", "That doesn't look like a YouTube video link.")
-        background.add_task(_run_youtube, job.job_id, link, f"youtube:{video_id}", destination, country_code)
+
+        def prepare():
+            return f"youtube:{video_id}", lambda: video_import.extract_places_from_youtube(link, trip[0]), None
     elif platform == "tiktok":
-        # Sprint 2: oEmbed caption first, then yt-dlp. Until then, send the user to the paste box.
-        job = job.model_copy(update={
-            "status": "failed", "error": "unsupported_platform",
-            "message": "TikTok import isn't ready yet. Paste the video's caption instead."})
+        def prepare():
+            url, post_id, is_slideshow = video_import.resolve_tiktok(link)
+            return (f"tiktok:{post_id}", lambda: video_import.extract_places_from_tiktok(url, trip[0]),
+                    SLIDESHOW_MESSAGE if is_slideshow else None)
     else:
         raise ApiError(400, "unsupported_platform", "Paste a YouTube or TikTok link.")
 
-    with _lock:
-        JOBS[job.job_id] = job
-    return job
+    return _start(background, platform, link, prepare, trip)
+
+
+@router.post("/text", response_model=ImportJob, status_code=202)
+def create_text_import(body: ImportTextCreate, background: BackgroundTasks) -> ImportJob:
+    """Paste-a-caption fallback: any text that mentions places."""
+    text = body.text.strip()
+    if not text:
+        raise ApiError(400, "empty_text", "Paste a caption or some text that mentions places.")
+    trip = _trip_context(body.trip_id)
+    destination = trip[0]
+    key = f"text:{_sha(text.encode(), (destination or '').encode())}"
+    return _start(background, "text", body.source_url,
+                  lambda: (key, lambda: video_import.extract_places_from_text(text, destination, body.source_url), None),
+                  trip)
+
+
+@router.post("/images", response_model=ImportJob, status_code=202)
+def create_image_import(background: BackgroundTasks,
+                        files: list[UploadFile] = File(..., description=f"1 to {MAX_IMAGES} screenshots"),
+                        trip_id: str | None = Form(None, alias="tripId")) -> ImportJob:
+    """Screenshots (e.g. every slide of a TikTok slideshow). Multipart form: files[] + optional tripId."""
+    if not 1 <= len(files) <= MAX_IMAGES:
+        raise ApiError(400, "bad_images", f"Upload between 1 and {MAX_IMAGES} screenshots.")
+    images = []
+    for f in files:
+        mime = (f.content_type or "").split(";")[0].lower()
+        if mime not in IMAGE_TYPES:
+            raise ApiError(400, "bad_images", f"'{f.filename}' isn't a JPEG, PNG, WebP or HEIC image.")
+        data = f.file.read(MAX_IMAGE_BYTES + 1)
+        if len(data) > MAX_IMAGE_BYTES:
+            raise ApiError(400, "bad_images", f"'{f.filename}' is over {MAX_IMAGE_BYTES // (1024 * 1024)} MB.")
+        if not data:
+            raise ApiError(400, "bad_images", f"'{f.filename}' is empty.")
+        images.append((data, mime))
+
+    trip = _trip_context(trip_id)
+    destination = trip[0]
+    key = f"images:{_sha(*(d for d, _ in images), (destination or '').encode())}"
+    return _start(background, "screenshot", None,
+                  lambda: (key, lambda: video_import.extract_places_from_images(images, destination), None),
+                  trip)
 
 
 @router.get("/{job_id}", response_model=ImportJob)
