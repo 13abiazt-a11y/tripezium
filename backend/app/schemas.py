@@ -120,6 +120,11 @@ class ItineraryItem(CamelModel):
     currency: str = Field(pattern=CURRENCY)
     cost_home: float  # per person, home currency
     status: Status
+    # Getting here from the previous stop (estimated from coordinates); null for a day's first stop
+    # or when a place has no coordinates. travelMode: walk | transit | train.
+    travel_mins: int | None = None
+    travel_mode: Literal["walk", "transit", "train"] | None = None
+    travel_km: float | None = None
 
 
 class ItineraryDay(CamelModel):

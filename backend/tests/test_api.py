@@ -153,7 +153,7 @@ def test_generate_itinerary_stores_and_creates_ai_places(client, monkeypatch):
     imported = client.post(f"/trips/{trip_id}/places", json={"places": [{"name": "Senso-ji"}]}).json()["places"][0]
 
     seen = {}
-    def fake_generate(trip, places, holidays=(), previous=None, closed=None, missing=None):
+    def fake_generate(trip, places, holidays=(), previous=None, closed=None, missing=None, timing=None):
         seen["places"] = [p.id for p in places]
         return _fake_plan(imported["id"])
     monkeypatch.setattr(planner.gemini, "generate_plan", fake_generate)
@@ -227,7 +227,7 @@ def test_closed_stop_triggers_one_fix_pass_then_holiday_check(client, monkeypatc
         ])
 
     calls = []
-    def fake_generate(trip, places, holidays=(), previous=None, closed=None, missing=None):
+    def fake_generate(trip, places, holidays=(), previous=None, closed=None, missing=None, timing=None):
         calls.append(closed)
         return plan_with_museum_at("09:00" if previous is None else "12:00")
     monkeypatch.setattr(planner.gemini, "generate_plan", fake_generate)
@@ -269,7 +269,7 @@ def test_missing_saved_place_is_added_and_gets_coordinates(client, monkeypatch):
         return GItinerary(days=[GDay(date="2026-12-01", items=first), *rest])
 
     calls = []
-    def fake_generate(trip, places, holidays=(), previous=None, closed=None, missing=None):
+    def fake_generate(trip, places, holidays=(), previous=None, closed=None, missing=None, timing=None):
         calls.append(missing)
         return make_plan(include_b=previous is not None)
     monkeypatch.setattr(planner.gemini, "generate_plan", fake_generate)
@@ -290,7 +290,7 @@ def test_all_saved_places_used_means_no_extra_call(client, monkeypatch):
     trip_id = client.post("/trips", json=TRIP_BODY).json()["id"]
     imported = client.post(f"/trips/{trip_id}/places", json={"places": [{"name": "Senso-ji"}]}).json()["places"][0]
     calls = []
-    def fake_generate(trip, places, holidays=(), previous=None, closed=None, missing=None):
+    def fake_generate(trip, places, holidays=(), previous=None, closed=None, missing=None, timing=None):
         calls.append(1)
         return _fake_plan(imported["id"])
     monkeypatch.setattr(planner.gemini, "generate_plan", fake_generate)
@@ -306,7 +306,7 @@ def test_get_places_resolves_every_itinerary_place_id(client, monkeypatch):
     imported = client.post(f"/trips/{trip_id}/places", json={"places": [
         {"name": "Senso-ji", "sourceUrl": "https://tiktok.com/x", "timestamp": "00:12"}]}).json()["places"][0]
     monkeypatch.setattr(planner.gemini, "generate_plan",
-                        lambda trip, places, holidays=(), previous=None, closed=None, missing=None: _fake_plan(imported["id"]))
+                        lambda trip, places, holidays=(), previous=None, closed=None, missing=None, timing=None: _fake_plan(imported["id"]))
     itinerary = client.post(f"/trips/{trip_id}/itinerary").json()
 
     r = client.get(f"/trips/{trip_id}/places")
@@ -325,3 +325,54 @@ def test_get_places_resolves_every_itinerary_place_id(client, monkeypatch):
 def test_get_places_unknown_trip_404(client):
     r = client.get("/trips/t_nope/places")
     assert r.status_code == 404 and r.json()["error"] == "not_found"
+
+
+# --- travel time between stops -------------------------------------------------------
+
+def _plan_with(days_items):
+    def it(time, mins, name, lat, lng):
+        return GItem(time=time, durationMins=mins, note="", estimatedCost=0, currency="JPY", status="ok",
+                     placeId=None, placeLat=None, placeLng=None,
+                     newPlace=GNewPlace(name=name, nameEnglish=name, category="landmark", lat=lat, lng=lng))
+    dates = ["2026-12-01", "2026-12-02", "2026-12-03", "2026-12-04"]
+    return GItinerary(days=[GDay(date=d, items=[it(*x) for x in items]) for d, items in zip(dates, days_items)])
+
+
+ASAKUSA, NAKAMISE, SHIBUYA = (35.7148, 139.7967), (35.7119, 139.7964), (35.6595, 139.7005)
+QUIET_DAY = [("10:00", 60, "Park", *SHIBUYA)]
+
+
+@needs_db
+def test_back_to_back_stops_across_town_are_pushed_later(client, monkeypatch):
+    trip_id = client.post("/trips", json=TRIP_BODY).json()["id"]
+    plan = _plan_with([[("09:00", 60, "Senso-ji", *ASAKUSA), ("10:00", 60, "Nakamise", *NAKAMISE),
+                        ("11:00", 60, "Shibuya", *SHIBUYA)], QUIET_DAY, QUIET_DAY, QUIET_DAY])
+    calls = []
+    monkeypatch.setattr(planner.gemini, "generate_plan", lambda *a, **k: calls.append(k) or plan.model_copy(deep=True))
+    day1 = client.post(f"/trips/{trip_id}/itinerary").json()["days"][0]["items"]
+
+    assert len(calls) == 1                                       # it fits the day: no fix pass needed
+    first, walk, metro = day1
+    assert first["travelMins"] is None                           # start of the day
+    assert walk["travelMode"] == "walk" and walk["time"] == "10:10"   # 09:00-10:00 then a ~10 min walk
+    assert metro["travelMode"] == "transit" and metro["travelKm"] > 5
+    assert metro["time"] > "11:00"                               # pushed back to leave time for the metro
+
+
+@needs_db
+def test_day_that_overruns_with_travel_triggers_one_fix_pass(client, monkeypatch):
+    trip_id = client.post("/trips", json=TRIP_BODY).json()["id"]   # day ends 21:00
+    overfull = _plan_with([[("09:00", 60, "Senso-ji", *ASAKUSA), ("19:30", 60, "Shibuya", *SHIBUYA),
+                            ("20:30", 30, "Asakusa again", *ASAKUSA)], QUIET_DAY, QUIET_DAY, QUIET_DAY])
+    fixed = _plan_with([[("09:00", 60, "Senso-ji", *ASAKUSA), ("19:30", 60, "Shibuya", *SHIBUYA)],
+                        QUIET_DAY, QUIET_DAY, QUIET_DAY])
+    calls = []
+    def fake(*a, **k):
+        calls.append(k)
+        return (fixed if k.get("previous") is not None else overfull).model_copy(deep=True)
+    monkeypatch.setattr(planner.gemini, "generate_plan", fake)
+
+    day1 = client.post(f"/trips/{trip_id}/itinerary").json()["days"][0]["items"]
+    assert len(calls) == 2
+    assert calls[1]["timing"] and "2026-12-01" in calls[1]["timing"][0] and "past 21:00" in calls[1]["timing"][0]
+    assert [i["time"] for i in day1][-1] <= "20:00"              # the fixed plan fits the day
