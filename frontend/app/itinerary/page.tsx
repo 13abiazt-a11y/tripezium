@@ -1,7 +1,7 @@
 "use client"
 
 import { useCallback, useEffect, useRef, useState } from "react"
-import { CalendarHeart, Clock, Compass, Lightbulb, Loader2, RefreshCw, Undo2, Wallet } from "lucide-react"
+import { CalendarHeart, Clock, Compass, Footprints, Lightbulb, Loader2, RefreshCw, TrainFront, TramFront, Undo2, Wallet } from "lucide-react"
 
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
@@ -13,6 +13,7 @@ import { VoiceEditButton } from "@/components/VoiceEditButton"
 import { DEMO_TRIP_ID, generateItinerary, getItinerary, getPlaces, getTrip, syncTrip } from "@/lib/api"
 import { countryName, flagOf } from "@/lib/destinations"
 import { SHOW_COSTS } from "@/lib/flags"
+import { describeLeg, estimateLeg, gapMins } from "@/lib/travel"
 import { cityKey, distanceKm, useCityCoords } from "@/lib/geo"
 import { formatMoney } from "@/lib/money"
 import { narrateDay } from "@/lib/narration"
@@ -83,6 +84,22 @@ function Cost({ item }: { item: EditableItem }) {
       ~{formatMoney(item.cost)}
       {local ? <span className="font-normal text-muted-foreground"> · {formatMoney(local)}</span> : null}
     </span>
+  )
+}
+
+/** How you get here from the previous stop; red if the plan doesn't leave enough time (e.g. after a voice edit). */
+function TravelHint({ prev, item }: { prev: EditableItem; item: EditableItem }) {
+  const leg = estimateLeg(prev, item)
+  if (!leg) return null
+  const gap = gapMins(prev, item)
+  const tight = gap < leg.mins
+  const Icon = leg.mode === "walk" ? Footprints : leg.mode === "train" ? TrainFront : TramFront
+  return (
+    <p className={`mb-1.5 flex items-center gap-1.5 text-xs ${tight ? "font-medium text-destructive" : "text-muted-foreground"}`}>
+      <Icon className="size-3.5 shrink-0" />
+      {describeLeg(leg)}
+      {tight ? ` · only ${Math.max(gap, 0)} min to get here` : ""}
+    </p>
   )
 }
 
@@ -444,6 +461,7 @@ export default function ItineraryPage() {
         <ol className="relative flex flex-col gap-3 border-l border-border pl-5">
           {items.map((item, i) => (
             <li key={`${item.time}-${item.name}-${i}`} id={`stop-${i + 1}`} className="relative scroll-mt-4">
+              {i > 0 ? <TravelHint prev={items[i - 1]} item={item} /> : null}
               <span
                 aria-hidden
                 style={{ background: categoryColour(item.category) }}
