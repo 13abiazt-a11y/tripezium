@@ -101,6 +101,26 @@ class Itinerary(CamelModel):
     home_currency: str = Field(pattern=CURRENCY)
 
 
+# --- Imports ------------------------------------------------------------
+
+ImportStatus = Literal["pending", "running", "done", "failed"]
+
+
+class ImportCreate(CamelModel):
+    link: str = Field(min_length=1, max_length=2000)
+    trip_id: str | None = None  # gives Gemini the destination as context
+
+
+class ImportJob(CamelModel):
+    job_id: str
+    status: ImportStatus
+    platform: str
+    link: str
+    places: list[Place] = Field(default_factory=list)
+    error: str | None = None  # error code when status == "failed"
+    message: str | None = None  # human-readable, safe to show the user
+
+
 # --- Misc ---------------------------------------------------------------
 
 class ErrorOut(BaseModel):

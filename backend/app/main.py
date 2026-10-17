@@ -5,7 +5,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from .config import get_settings
 from .errors import install_error_handlers
-from .routers import itinerary, places, trips
+from .routers import imports, itinerary, places, trips
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 
@@ -23,6 +23,7 @@ install_error_handlers(app)
 app.include_router(trips.router)
 app.include_router(places.router)
 app.include_router(itinerary.router)
+app.include_router(imports.router)
 
 
 @app.get("/health")

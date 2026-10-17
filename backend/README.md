@@ -31,6 +31,13 @@ Tests: `python -m pytest -q`
 | `POST /trips/{id}/places` | Body `{ "places": [Place] }`. Missing `id`s are assigned. Returns `{ "places": [Place] }` |
 | `POST /trips/{id}/itinerary` | Generates and stores the itinerary |
 | `GET /trips/{id}/itinerary` | Returns the stored itinerary |
+| `POST /imports` | Body `{ "link", "tripId"? }`. Returns 202 + ImportJob `{ jobId, status, platform, link, places, error, message }` |
+| `GET /imports/{jobId}` | Poll until `status` is `done` (places ready) or `failed` (show `message`, open the paste box) |
+
+**Video import:** YouTube links go straight to Gemini (needs `GEMINI_API_KEY`; `GEMINI_MODEL`
+defaults to `gemini-2.5-flash`). Results are cached per video, so a repeat import returns
+`done` immediately. TikTok returns `failed` / `unsupported_platform` until Sprint 2.
+Try it without the server: `python -m app.services.video_import "<youtube-url>" Tokyo`
 
 **Demo trip ID (mock):** `t_demo0001` (Tokyo, 30 Dec 2026 to 2 Jan 2027, 2 travellers, GBP).
 
