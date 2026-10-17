@@ -20,8 +20,10 @@ flags public-holiday closures, and costs every item in local and home currency.
 4. **Closure check (deterministic):** on a public holiday, closure-prone stops (museum, shop, market,
    restaurant, cafe, bank, office, gallery) that are `ok` become `check_hours`. `closed` is never changed.
 
-Final status: hours say open -> `ok`; hours say closed -> `closed`; key set but no hours found -> `check_hours`;
-no key -> Gemini's judgement. Google can't tell us holiday hours months ahead, hence step 4.
+Final status: opening hours can only make a status more cautious, never less (weekly hours can't see seasonal
+closures). Hours say closed -> `closed`; key set but no hours found -> `check_hours` (except open-air
+`landmark`/`park` stops like streets and crossings); otherwise Gemini's status.
+Google can't tell us holiday hours months ahead, hence step 4.
 
 ## Run locally
 

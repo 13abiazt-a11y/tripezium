@@ -66,17 +66,26 @@ def check_hours(trip: TripRow, plan: gemini.GItinerary, imported: dict[str, Plac
     return verdicts, closed
 
 
-def final_status(gemini_status: str, verdict: str | None) -> str:
+# Streets, crossings and parks have no opening hours; "no hours on Google" is expected, not a warning sign.
+OPEN_AIR = {"landmark", "park"}
+
+
+def final_status(gemini_status: str, verdict: str | None, category: str | None = None) -> str:
+    """Opening hours can only make a status MORE cautious, never less.
+
+    Google's weekly hours can't see seasonal closures (e.g. a museum shut 26 Dec - 1 Jan still
+    shows its normal Thursday hours), so "open" never upgrades Gemini's check_hours/closed.
+    """
     if verdict == "closed":
         return "closed"
-    if verdict == "open":
-        return "ok"
-    if verdict == "unknown":  # check is on, but Google has no hours for it: don't claim it's open
-        return "check_hours" if gemini_status == "ok" else gemini_status
-    return gemini_status  # check is off: Gemini's judgement stands
+    if verdict == "unknown" and gemini_status == "ok" and (category or "").lower() not in OPEN_AIR:
+        return "check_hours"  # no hours on Google: don't claim it's open
+    return gemini_status
 
 
-def _to_itinerary(db: Session, trip: TripRow, plan: gemini.GItinerary, verdicts: Verdicts) -> tuple[Itinerary, dict]:
+def _to_itinerary(
+    db: Session, trip: TripRow, plan: gemini.GItinerary, verdicts: Verdicts, imported: dict[str, PlaceRow]
+) -> tuple[Itinerary, dict]:
     """Contract shape. Stops Gemini invented become places (origin='ai'), replacing earlier AI suggestions."""
     db.execute(delete(PlaceRow).where(PlaceRow.trip_id == trip.id, PlaceRow.origin == "ai"))
     categories: dict[str, str | None] = {}
@@ -86,6 +95,7 @@ def _to_itinerary(db: Session, trip: TripRow, plan: gemini.GItinerary, verdicts:
         items = []
         for g, verdict in zip(gday.items, day_verdicts):
             place_id = g.placeId
+            category = imported[place_id].category if place_id in imported else None
             if g.newPlace is not None:
                 np = g.newPlace
                 place_id = new_id("p")
@@ -96,12 +106,12 @@ def _to_itinerary(db: Session, trip: TripRow, plan: gemini.GItinerary, verdicts:
                     lng=np.lng if -180 <= np.lng <= 180 else None,
                     origin="ai",
                 ))
-                categories[place_id] = np.category.lower() if np.category else None
+                category = categories[place_id] = np.category.lower() if np.category else None
             items.append(ItineraryItem(
                 time=g.time, place_id=place_id, duration_mins=g.durationMins, note=g.note,
                 estimated_cost=g.estimatedCost, currency=g.currency,
                 cost_home=0.0,  # M5: converted by budget.py
-                status=final_status(g.status, verdict),
+                status=final_status(g.status, verdict, category),
             ))
         days.append(ItineraryDay(date=gday.date, holiday=None, items=items, day_total_home=0.0))
 
@@ -141,7 +151,7 @@ def build_itinerary(db: Session, trip: TripRow) -> Itinerary:
         except ApiError as e:
             log.warning("trip=%s closure fix failed (%s); keeping first plan", trip.id, e.code)
 
-    itinerary, ai_categories = _to_itinerary(db, trip, plan, verdicts)
+    itinerary, ai_categories = _to_itinerary(db, trip, plan, verdicts, imported)
     categories = {pid: p.category for pid, p in imported.items()} | ai_categories
     apply_closure_check(itinerary, holidays, categories)
     save(db, trip.id, itinerary)

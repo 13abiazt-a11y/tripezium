@@ -54,8 +54,9 @@ def test_describe_day_uses_monday_first_descriptions():
 
 @pytest.mark.parametrize("gemini_status, verdict, expected", [
     ("ok", "closed", "closed"),           # hours say closed: trust the data
-    ("check_hours", "open", "ok"),        # hours confirm it's open
-    ("closed", "open", "ok"),
+    ("ok", "open", "ok"),
+    ("check_hours", "open", "check_hours"),  # weekly hours can't see seasonal closures: never upgrade
+    ("closed", "open", "closed"),
     ("ok", "unknown", "check_hours"),     # no hours on Google: don't claim it's open
     ("check_hours", "unknown", "check_hours"),
     ("ok", None, "ok"),                   # check off (no key): Gemini's judgement stands
@@ -63,6 +64,13 @@ def test_describe_day_uses_monday_first_descriptions():
 ])
 def test_final_status(gemini_status, verdict, expected):
     assert final_status(gemini_status, verdict) == expected
+
+
+def test_open_air_places_without_hours_stay_ok():
+    assert final_status("ok", "unknown", "landmark") == "ok"      # e.g. Shibuya Crossing
+    assert final_status("ok", "unknown", "Park") == "ok"
+    assert final_status("ok", "unknown", "market") == "check_hours"
+    assert final_status("ok", "closed", "park") == "closed"       # real closures still count
 
 
 def test_field_mask_is_hours_only():
