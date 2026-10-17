@@ -3,8 +3,8 @@
 FastAPI service that stores trips and places, generates a day-by-day itinerary with Gemini,
 flags public-holiday closures, and costs every item in local and home currency.
 
-> **Status: M1, mock mode.** Every endpoint returns contract-shaped JSON for a hardcoded Tokyo
-> trip. Trips and places are held in memory and vanish on restart. The database comes in M2.
+> **Status: M2.** Trips and places are stored in Tiger Data (Postgres + TimescaleDB).
+> The itinerary endpoints still return the Tokyo mock until Gemini generation lands (M3).
 
 ## Run locally
 
@@ -13,30 +13,35 @@ cd backend
 python -m venv .venv
 .venv/Scripts/activate        # Windows (Git Bash); macOS/Linux: source .venv/bin/activate
 pip install -r requirements.txt
-cp .env.example .env          # fill in values (none are needed for M1)
+cp .env.example .env          # fill in DATABASE_URL (Tiger Data connection string) at minimum
+python apply_schema.py        # creates tables + the fx_rates hypertable (safe to re-run)
+python seed_demo.py           # creates/resets the demo trip t_demo0001
 uvicorn app.main:app --reload --port 8000
 ```
 
 Interactive docs: http://localhost:8000/docs
 
-Tests: `python -m pytest -q`
+Tests: `python -m pytest -q` (API tests run against the DB in `DATABASE_URL` and clean up after themselves; they're skipped if it isn't set)
+
+The password in `DATABASE_URL` can contain special characters like `@`; the app percent-encodes it.
 
 ## Endpoints
 
 | Method + path | Notes |
 |---|---|
-| `GET /health` | `{ "status": "ok", ... }` |
-| `POST /trips` | Body: Trip without `id`. Returns 201 + full Trip |
+| `GET /health` | `{ "status": "ok", "db": "ok" }`, or 503 with `"status": "degraded"` if the DB is unreachable |
+| `POST /trips` | Body: Trip without `id`. Returns 201 + full Trip. Resolves country + currency via Nominatim |
 | `GET /trips/{id}` | Returns Trip |
 | `POST /trips/{id}/places` | Body `{ "places": [Place] }`. Missing `id`s are assigned. Returns `{ "places": [Place] }` |
 | `POST /trips/{id}/itinerary` | Generates and stores the itinerary |
 | `GET /trips/{id}/itinerary` | Returns the stored itinerary |
 
-**Demo trip ID (mock):** `t_demo0001` (Tokyo, 30 Dec 2026 to 2 Jan 2027, 2 travellers, GBP).
+**Demo trip ID:** `t_demo0001` (Tokyo, 30 Dec 2026 to 2 Jan 2027, 2 travellers, GBP).
 
 All JSON is camelCase. Errors are always `{ "error": "<code>", "message": "<text>" }`.
 `estimatedCost` and `costHome` are **per person**.
 
 ## Credits
 
-FastAPI, Uvicorn, Pydantic, pydantic-settings. (Full list added as the build progresses.)
+FastAPI, Uvicorn, Pydantic, pydantic-settings, SQLAlchemy, psycopg, httpx, Tiger Data / TimescaleDB,
+Nominatim / OpenStreetMap (geocoding). (Full list added as the build progresses.)

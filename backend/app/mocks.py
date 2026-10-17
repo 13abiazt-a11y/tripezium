@@ -1,7 +1,7 @@
-"""M1 mock data: a hardcoded Tokyo demo trip so the front end can build against the contract.
+"""Hardcoded Tokyo demo data.
 
-Replaced by the database (M2) and Gemini (M3). Trips/places created via the mock
-endpoints live in memory only and vanish on restart.
+DEMO_TRIP and DEMO_PLACES are written to the DB by seed_demo.py. demo_itinerary() is
+served by the itinerary endpoints until Gemini generation lands (M3).
 """
 import datetime as dt
 from decimal import ROUND_HALF_UP, Decimal
@@ -99,8 +99,3 @@ def demo_itinerary() -> Itinerary:
         days.append(ItineraryDay(date=date, holiday=holiday, items=items, day_total_home=float(day_total)))
     trip_total = sum((Decimal(str(d.day_total_home)) for d in days), Decimal(0))
     return Itinerary(days=days, trip_total_home=float(trip_total), home_currency="GBP")
-
-
-# In-memory stores for the mock endpoints.
-TRIPS: dict[str, Trip] = {DEMO_TRIP_ID: DEMO_TRIP}
-PLACES: dict[str, dict[str, Place]] = {DEMO_TRIP_ID: {p.id: p for p in DEMO_PLACES}}
