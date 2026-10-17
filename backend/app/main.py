@@ -1,9 +1,10 @@
 import logging
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Response
 from fastapi.middleware.cors import CORSMiddleware
 
 from .config import get_settings
+from .db import check_db
 from .errors import install_error_handlers
 from .routers import itinerary, places, trips
 
@@ -26,6 +27,8 @@ app.include_router(itinerary.router)
 
 
 @app.get("/health")
-def health() -> dict:
-    # M2 adds a real DB connectivity check.
-    return {"status": "ok", "db": "not_configured"}
+def health(response: Response) -> dict:
+    db = check_db()
+    if db != "ok":
+        response.status_code = 503
+    return {"status": "ok" if db == "ok" else "degraded", "db": db}

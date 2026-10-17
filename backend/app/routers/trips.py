@@ -1,28 +1,60 @@
-from fastapi import APIRouter
+import datetime as dt
 
-from .. import mocks
+from fastapi import APIRouter, Depends
+from sqlalchemy.orm import Session
+
+from ..db import get_db
 from ..errors import not_found
 from ..ids import new_id
+from ..models import TripRow
 from ..schemas import Trip, TripCreate
+from ..services.geo import resolve_destination
 
 router = APIRouter(prefix="/trips", tags=["trips"])
 
 
-def get_trip_or_404(trip_id: str) -> Trip:
-    trip = mocks.TRIPS.get(trip_id)
-    if trip is None:
+def trip_out(row: TripRow) -> Trip:
+    return Trip(
+        id=row.id,
+        destination=row.destination,
+        start_date=row.start_date,
+        end_date=row.end_date,
+        day_start=row.day_start.strftime("%H:%M"),
+        day_end=row.day_end.strftime("%H:%M"),
+        travellers=row.travellers,
+        interests=list(row.interests),
+        home_currency=row.home_currency,
+    )
+
+
+def get_trip_or_404(db: Session, trip_id: str) -> TripRow:
+    row = db.get(TripRow, trip_id)
+    if row is None:
         raise not_found("Trip", trip_id)
-    return trip
+    return row
 
 
 @router.post("", response_model=Trip, status_code=201)
-def create_trip(body: TripCreate) -> Trip:
-    trip = Trip(id=new_id("t"), **body.model_dump())
-    mocks.TRIPS[trip.id] = trip
-    mocks.PLACES[trip.id] = {}
-    return trip
+def create_trip(body: TripCreate, db: Session = Depends(get_db)) -> Trip:
+    country_code, local_currency = resolve_destination(body.destination)
+    row = TripRow(
+        id=new_id("t"),
+        destination=body.destination,
+        country_code=country_code,
+        local_currency=local_currency,
+        start_date=body.start_date,
+        end_date=body.end_date,
+        day_start=dt.time.fromisoformat(body.day_start),
+        day_end=dt.time.fromisoformat(body.day_end),
+        travellers=body.travellers,
+        interests=body.interests,
+        home_currency=body.home_currency,
+    )
+    db.add(row)
+    db.commit()
+    return trip_out(row)
 
 
 @router.get("/{trip_id}", response_model=Trip)
-def get_trip(trip_id: str) -> Trip:
-    return get_trip_or_404(trip_id)
+def get_trip(trip_id: str, db: Session = Depends(get_db)) -> Trip:
+    return trip_out(get_trip_or_404(db, trip_id))
