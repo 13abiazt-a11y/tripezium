@@ -163,3 +163,22 @@ def test_patch_unknown_trip_404(client):
 def test_demo_trip_cannot_be_patched(client):
     r = client.patch("/trips/t_demo0001", json={"travellers": 9})
     assert r.status_code == 403 and r.json()["error"] == "read_only"
+
+
+# --- POST /places after an itinerary exists ------------------------------------------
+
+@needs_db
+def test_new_imported_places_make_the_old_itinerary_stale(client, monkeypatch):
+    trip, _ = _trip_with_itinerary(client, monkeypatch)
+    assert _counts(trip["id"]) == (True, 1, 4)
+    r = client.post(f"/trips/{trip['id']}/places", json={"places": [{"name": "Golden Gai", "confidence": 0.9}]})
+    assert r.status_code == 200
+    assert _counts(trip["id"]) == (False, 2, 0)        # plan dropped so the new must-see gets included
+    assert client.get(f"/trips/{trip['id']}/itinerary").json()["error"] == "no_itinerary"
+
+
+@needs_db
+def test_demo_trip_rejects_imports(client):
+    r = client.post("/trips/t_demo0001/places", json={"places": [{"name": "Somewhere"}]})
+    assert r.status_code == 403 and r.json()["error"] == "read_only"
+    assert client.get("/trips/t_demo0001/itinerary").status_code == 200   # demo itinerary untouched
