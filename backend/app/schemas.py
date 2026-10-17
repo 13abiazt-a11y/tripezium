@@ -64,6 +64,20 @@ class Trip(TripCreate):
     id: str
 
 
+class TripUpdate(CamelModel):
+    """PATCH /trips/{id}: send only the fields that changed. The merged trip is validated exactly
+    like a new one (dates, route days adding up, real cities). To clear the route, send "route": []."""
+    destination: str | None = Field(None, min_length=1, max_length=200)
+    route: list[RouteLeg] | None = Field(None, max_length=MAX_ROUTE_LEGS)
+    start_date: dt.date | None = None
+    end_date: dt.date | None = None
+    day_start: str | None = Field(None, pattern=HHMM)
+    day_end: str | None = Field(None, pattern=HHMM)
+    travellers: int | None = Field(None, ge=1, le=50)
+    interests: list[str] | None = Field(None, max_length=20)
+    home_currency: str | None = Field(None, pattern=CURRENCY)
+
+
 # --- Place --------------------------------------------------------------
 
 class PlaceIn(CamelModel):
