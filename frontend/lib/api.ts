@@ -2,7 +2,7 @@
 // returns is { error, message }, and `message` is written to be shown to the user.
 import { loadCities } from "./destinations"
 import { addDays, daysBetween, suggestCitiesFor } from "./route"
-import { saveTrip } from "./trip-store"
+import { loadTrip, saveTrip } from "./trip-store"
 import type { Itinerary, ItineraryDay, ItemStatus, Place, Trip } from "./types"
 
 // Inlined at build time (must be written out literally). Defaults to the live API.
@@ -141,7 +141,23 @@ async function payload(trip: Trip): Promise<ApiTripIn> {
  * user changed anything since. Changing the plan (dates, cities, interests...) makes the server
  * drop the old itinerary, so the itinerary page regenerates. Returns the saved trip.
  */
-export async function syncTrip(trip: Trip): Promise<Trip> {
+export function syncTrip(trip: Trip): Promise<Trip> {
+  // One sync at a time. Two overlapping first syncs (React runs effects twice in development; a quick
+  // double navigation in production) would otherwise both POST and create two trips, and imported
+  // places could end up on a different trip from the itinerary. A queued call picks up the id the
+  // earlier one saved, so it PATCHes that trip instead of creating another.
+  const run = syncQueue.then(() => {
+    const stored = loadTrip()
+    const fresh = !isServerTrip(trip.id) && isServerTrip(stored.id) ? { ...trip, id: stored.id, synced: stored.synced } : trip
+    return syncNow(fresh)
+  })
+  syncQueue = run.catch(() => undefined)
+  return run
+}
+
+let syncQueue: Promise<unknown> = Promise.resolve()
+
+async function syncNow(trip: Trip): Promise<Trip> {
   if (isDemoTrip(trip.id)) return trip
   const body = await payload(trip)
   const key = JSON.stringify(body)
@@ -272,10 +288,20 @@ const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms))
 /** Poll a job every 2 s until it finishes. Videos can take a minute or two. */
 export async function waitForImport(job: ApiImportJob, timeoutMs = 4 * 60_000): Promise<ImportResult> {
   const until = Date.now() + timeoutMs
+  let misses = 0
   while (job.status === "pending" || job.status === "running") {
     if (Date.now() > until) throw new ApiError(504, "import_timeout", "That's taking too long. Try pasting the caption instead.")
     await sleep(2000)
-    job = await request<ApiImportJob>(`/imports/${job.jobId}`)
+    try {
+      job = await request<ApiImportJob>(`/imports/${job.jobId}`)
+      misses = 0
+    } catch (e) {
+      // A dropped request (phone signal, a blip on the server) shouldn't throw away a minute of work:
+      // keep polling. Give up on a 404 (the server restarted and forgot the job) or after ~10 s of errors.
+      if ((e instanceof ApiError && e.status === 404) || ++misses >= 5) {
+        throw new ApiError(503, "import_lost", "We lost track of that import. Please try again: it'll be quicker the second time.")
+      }
+    }
   }
   if (job.status === "failed") {
     throw new ApiError(422, job.error ?? "import_failed", job.message ?? "We couldn't read that. Try pasting the caption instead.")
