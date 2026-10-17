@@ -112,6 +112,9 @@ nothing to build. Everything is in `backend/deploy/`.
 **Redeploy after pushing new code:** `ssh root@<IP> "bash /root/setup.sh api.<domain>"`
 (pulls `main`, reinstalls deps, applies the schema, restarts). To try another branch: `BRANCH=<branch> bash /root/setup.sh api.<domain>`.
 
+**Roll back to the last known-good version:** `ssh root@<IP> "BRANCH=v1-safe bash /root/setup.sh api.<domain>"`, then
+`bash /root/setup.sh api.<domain>` to go back to `main`.
+
 **Change a secret:** edit `backend/.env` locally, `scp` it to `/root/iku.env` again, re-run setup.
 
 **Logs:** `ssh root@<IP> journalctl -u iku-api -f` · status: `systemctl status iku-api caddy`

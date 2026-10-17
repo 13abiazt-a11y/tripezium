@@ -7,7 +7,7 @@
 # Secrets: copy backend/.env to /root/iku.env on the server first (never in git). On the first run
 # it's installed as /opt/iku/app/backend/.env; later runs keep the existing one unless
 # /root/iku.env is newer.
-# BRANCH defaults to main; e.g. BRANCH=my-feature to try a branch on the server.
+# BRANCH defaults to main; BRANCH=my-feature tries a branch, BRANCH=v1-safe rolls back to a tag.
 set -euo pipefail
 
 DOMAIN="${1:-}"
@@ -37,9 +37,9 @@ id iku >/dev/null 2>&1 || useradd --system --create-home --home-dir /opt/iku --s
 
 echo "==> Code ($BRANCH)"
 if [ -d "$APP/.git" ]; then
-  sudo -u iku git -C "$APP" fetch -q origin "$BRANCH"
-  sudo -u iku git -C "$APP" checkout -q "$BRANCH"
-  sudo -u iku git -C "$APP" reset -q --hard "origin/$BRANCH"
+  # Works for a branch or a tag (e.g. BRANCH=v1-safe to roll back): deploy exactly what was fetched.
+  sudo -u iku git -C "$APP" fetch -q --force --tags origin "$BRANCH"
+  sudo -u iku git -C "$APP" checkout -q --force --detach FETCH_HEAD
 else
   sudo -u iku git clone -q -b "$BRANCH" "$REPO" "$APP"
 fi
