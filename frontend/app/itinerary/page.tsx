@@ -1,19 +1,19 @@
 "use client"
 
-import { useEffect, useMemo, useState } from "react"
-import { Clock, Compass, Lightbulb, MapPin, Wallet } from "lucide-react"
+import { useCallback, useEffect, useRef, useState } from "react"
+import { CalendarHeart, Clock, Compass, Lightbulb, Loader2, MapPin, RefreshCw, Wallet } from "lucide-react"
 
 import { Badge } from "@/components/ui/badge"
+import { Button } from "@/components/ui/button"
 import { PageShell } from "@/components/page-shell"
 import { RouteEditor } from "@/components/route-editor"
+import { DEMO_TRIP_ID, generateItinerary, getItinerary, getPlaces, getTrip, syncTrip } from "@/lib/api"
 import { countryName, flagOf } from "@/lib/destinations"
 import { SHOW_COSTS } from "@/lib/flags"
-import { formatMoney, totals } from "@/lib/money"
-import { sampleDay } from "@/lib/sample-day"
-import { mockItinerary, mockPlaces, mockTrip } from "@/lib/mock"
+import { formatMoney } from "@/lib/money"
 import { addDays, daysBetween, planDays, recommendRoute } from "@/lib/route"
 import { loadTrip, saveTrip } from "@/lib/trip-store"
-import type { ItineraryItem, Place, RouteStop, Trip } from "@/lib/types"
+import type { Itinerary, ItineraryItem, Money, Place, RouteStop, Trip } from "@/lib/types"
 
 function formatDay(date: string) {
   return new Date(date + "T00:00:00").toLocaleDateString(undefined, { weekday: "short", day: "numeric", month: "short" })
@@ -25,55 +25,171 @@ function formatDuration(mins: number) {
   return [h ? `${h}h` : "", m ? `${m}m` : ""].filter(Boolean).join(" ")
 }
 
-export default function ItineraryPage() {
-  // TODO(A+C): replace mocks with GET /trips/{id}/itinerary
-  const [trip, setTrip] = useState<Trip>(mockTrip)
-  const places = useMemo(() => new Map<string, Place>(mockPlaces.map((p) => [p.id, p])), [])
-  const [active, setActive] = useState(0)
+type Phase = "loading" | "generating" | "ready" | "error"
 
-  useEffect(() => {
-    const t = loadTrip()
-    if (t.stops.length && t.startDate) {
-      if (!t.route.length) t.route = recommendRoute(t)
-      setTrip(t)
+type ShownDay = {
+  date: string
+  city: string
+  country: string
+  dayInCity?: number
+  daysInCity?: number
+  explore?: boolean
+  holiday?: string | null
+  total?: Money
+  items: ItineraryItem[]
+}
+
+function Cost({ item }: { item: ItineraryItem }) {
+  if (!item.cost) return null
+  if (item.cost.amount === 0) return <span className="font-medium text-foreground">Free</span>
+  const local = item.localCost && item.localCost.currency !== item.cost.currency ? item.localCost : null
+  return (
+    <span className="font-medium text-foreground">
+      ~{formatMoney(item.cost)}
+      {local ? <span className="font-normal text-muted-foreground"> · {formatMoney(local)}</span> : null}
+    </span>
+  )
+}
+
+function StatusBadge({ status }: { status?: ItineraryItem["status"] }) {
+  if (status === "check_hours") return <Badge variant="outline">Check hours</Badge>
+  if (status === "closed") return <Badge variant="destructive">Closed</Badge>
+  return null
+}
+
+export default function ItineraryPage() {
+  const [trip, setTrip] = useState<Trip | null>(null)
+  const [itinerary, setItinerary] = useState<Itinerary | null>(null)
+  const [places, setPlaces] = useState<Map<string, Place>>(new Map())
+  const [phase, setPhase] = useState<Phase>("loading")
+  const [error, setError] = useState("")
+  const [routeChanged, setRouteChanged] = useState(false)
+  const [active, setActive] = useState(0)
+  const started = useRef(false) // dev Strict Mode runs effects twice: never ask Gemini twice
+
+  const fail = (e: unknown) => {
+    setError(e instanceof Error ? e.message : "Something went wrong. Please try again.")
+    setPhase("error")
+  }
+
+  // The stored itinerary if there is one (instant), otherwise ask Gemini to plan it (slow).
+  const loadItinerary = useCallback(async (tripId: string) => {
+    let it = await getItinerary(tripId)
+    if (!it) {
+      setPhase("generating")
+      it = await generateItinerary(tripId)
     }
+    const list = await getPlaces(tripId) // after generating: includes the stops Gemini added
+    setPlaces(new Map(list.map((p) => [p.id, p])))
+    setItinerary(it)
+    setPhase("ready")
   }, [])
 
+  const run = useCallback(async () => {
+    setError("")
+    setPhase("loading")
+    try {
+      let t = loadTrip()
+      if (t.stops.length && t.startDate) {
+        if (!t.route.length) t = saveTrip({ route: recommendRoute(t) })
+        setTrip(t)
+        t = await syncTrip(t) // creates it on the server, or sends what changed since
+      } else {
+        t = await getTrip(DEMO_TRIP_ID) // nothing planned in this browser yet: show the demo trip
+      }
+      setTrip(t)
+      await loadItinerary(t.id)
+    } catch (e) {
+      fail(e)
+    }
+  }, [loadItinerary])
+
+  useEffect(() => {
+    if (started.current) return
+    started.current = true
+    run()
+  }, [run])
+
+  const editable = !!trip?.stops.length // the demo trip is read-only
+
   const update = (patch: Partial<Trip>) => {
-    setTrip((t) => ({ ...t, ...patch }))
-    if (trip.id !== mockTrip.id) saveTrip(patch)
+    setTrip((t) => (t ? { ...t, ...patch } : t))
+    if (editable) saveTrip(patch)
+    setRouteChanged(true)
   }
   const setRoute = (route: RouteStop[]) => update({ route })
 
-  const tripDays = daysBetween(trip.startDate, trip.endDate)
-  const days = planDays(trip.startDate, trip.route)
+  async function applyRouteChange() {
+    setRouteChanged(false)
+    setItinerary(null)
+    setActive(0)
+    setPhase("loading")
+    try {
+      const t = await syncTrip(loadTrip()) // the server drops the old plan, so this regenerates
+      setTrip(t)
+      await loadItinerary(t.id)
+    } catch (e) {
+      fail(e)
+    }
+  }
+
+  const planned = trip ? planDays(trip.startDate, trip.route) : []
+  const tripDays = trip ? daysBetween(trip.startDate, trip.endDate) : 0
+  const days: ShownDay[] = itinerary
+    ? itinerary.days.map((d) => {
+        const p = planned.find((x) => x.date === d.date)
+        return { ...p, ...d, city: p?.city ?? d.city ?? trip?.destination ?? "", country: p?.country ?? "" }
+      })
+    : planned.map((p) => ({ ...p, items: [] }))
   const activeIndex = Math.min(active, Math.max(0, days.length - 1))
   const day = days[activeIndex]
+  const items = day?.items ?? []
 
-  // Real-looking mock activities only exist for Tokyo; every other city gets a
-  // sample day until C's itinerary endpoint is live.
-  const tokyoDays = days.filter((d) => d.city === "Tokyo").map((d) => d.date)
-  const tokyoItems = day && day.city === "Tokyo" ? mockItinerary[tokyoDays.indexOf(day.date)]?.items : undefined
-  const sample = day && !tokyoItems ? sampleDay(day.city, day.dayInCity, trip.budget.currency) : null
-  const items: ItineraryItem[] = tokyoItems ?? sample?.items ?? []
-  const lookup = (id: string) => places.get(id) ?? sample?.places.find((p) => p.id === id)
-  const dayTotals = totals(items.map((i) => i.cost))
+  const perPerson = itinerary?.total
+  const group = perPerson && trip ? { ...perPerson, amount: perPerson.amount * trip.travellers } : null
+  const budget = trip?.budget.amount && group && trip.budget.currency === group.currency ? trip.budget.amount : null
 
   return (
     <PageShell
       step={4}
       back="/import"
-      title={`${trip.destination || "Your"} itinerary`}
-      subtitle={`${days.length} days · ${trip.route.length} ${trip.route.length === 1 ? "stop" : "stops"} · ${trip.travellers} ${
-        trip.travellers === 1 ? "traveller" : "travellers"
-      }`}
+      title={`${trip?.destination || "Your"} itinerary`}
+      subtitle={
+        trip
+          ? `${days.length} days · ${Math.max(trip.route.length, 1)} ${trip.route.length > 1 ? "stops" : "stop"} · ${trip.travellers} ${
+              trip.travellers === 1 ? "traveller" : "travellers"
+            }`
+          : "Loading…"
+      }
     >
       {/* Map goes here (B: Leaflet) */}
       <div className="mb-4 flex h-40 items-center justify-center rounded-xl bg-muted text-sm text-muted-foreground">
         <MapPin className="mr-1.5 size-4" /> Map
       </div>
 
-      {trip.route.length > 1 || tripDays !== days.length ? (
+      {SHOW_COSTS && perPerson && group ? (
+        <div className="mb-4 rounded-xl bg-card p-3 text-sm ring-1 ring-foreground/10">
+          <p className="inline-flex items-center gap-1.5 font-medium">
+            <Wallet className="size-4 text-primary" /> About {formatMoney(perPerson)} per person
+            {trip && trip.travellers > 1 ? ` · ${formatMoney(group)} for ${trip.travellers}` : ""}
+          </p>
+          {budget !== null ? (
+            group.amount <= budget ? (
+              <p className="mt-1 text-muted-foreground">
+                Within your {formatMoney({ amount: budget, currency: group.currency })} budget, with about{" "}
+                {formatMoney({ amount: budget - group.amount, currency: group.currency })} to spare.
+              </p>
+            ) : (
+              <p className="mt-1 font-medium text-destructive">
+                About {formatMoney({ amount: group.amount - budget, currency: group.currency })} over your{" "}
+                {formatMoney({ amount: budget, currency: group.currency })} budget.
+              </p>
+            )
+          ) : null}
+        </div>
+      ) : null}
+
+      {editable && trip && (trip.route.length > 1 || tripDays !== planned.length) ? (
         <RouteEditor
           route={trip.route}
           tripDays={tripDays}
@@ -84,6 +200,15 @@ export default function ItineraryPage() {
             update({ endDate: addDays(trip.startDate, total - 1) })
           }}
         />
+      ) : null}
+
+      {routeChanged && phase !== "generating" ? (
+        <div className="mb-4 flex items-center justify-between gap-3 rounded-xl bg-secondary p-3 text-sm text-secondary-foreground">
+          <p>You changed your route. Update the plan to match?</p>
+          <Button size="sm" onClick={applyRouteChange}>
+            <RefreshCw /> Update
+          </Button>
+        </div>
       ) : null}
 
       <div className="-mx-4 mb-4 flex gap-2 overflow-x-auto px-4 pb-1" role="tablist">
@@ -101,17 +226,28 @@ export default function ItineraryPage() {
               Day {i + 1} <span className="opacity-70">· {formatDay(d.date)}</span>
             </span>
             <span className="text-xs opacity-80">
-              <span aria-hidden>{flagOf(d.country)}</span> {d.city}
+              {d.country ? <span aria-hidden>{flagOf(d.country)} </span> : null}
+              {d.city}
+              {d.holiday ? " · holiday" : ""}
             </span>
           </button>
         ))}
       </div>
 
-      {day ? (
+      {day && day.dayInCity && day.daysInCity ? (
         <p className="mb-3 text-sm text-muted-foreground">
           {day.city} · day {day.dayInCity} of {day.daysInCity}
-          {sample ? " · sample plan" : ""}
         </p>
+      ) : null}
+
+      {day?.holiday ? (
+        <div className="mb-3 flex items-start gap-2 rounded-xl bg-secondary p-3 text-sm text-secondary-foreground">
+          <CalendarHeart className="mt-0.5 size-4 shrink-0 text-primary" />
+          <p>
+            <span className="font-medium">{day.holiday}.</span> It’s a public holiday, so some places close or change
+            their hours. We’ve planned around it and marked anything worth checking.
+          </p>
+        </div>
       ) : null}
 
       {day?.explore ? (
@@ -125,16 +261,37 @@ export default function ItineraryPage() {
         </div>
       ) : null}
 
-      {SHOW_COSTS && dayTotals.length ? (
+      {SHOW_COSTS && day?.total && items.length ? (
         <p className="mb-3 inline-flex items-center gap-1.5 text-sm font-medium">
-          <Wallet className="size-4 text-primary" /> About {dayTotals.map(formatMoney).join(" + ")} per person today
+          <Wallet className="size-4 text-primary" /> About {formatMoney(day.total)} per person today
         </p>
       ) : null}
 
-      {items.length ? (
+      {phase === "generating" || phase === "loading" ? (
+        <div className="flex flex-col items-center gap-2 rounded-xl border border-dashed p-6 text-center text-sm text-muted-foreground">
+          <Loader2 className="size-5 animate-spin text-primary" />
+          {phase === "generating" ? (
+            <>
+              <p className="font-medium text-foreground">Planning your trip…</p>
+              <p>Checking opening hours, public holidays and prices. This takes about a minute.</p>
+            </>
+          ) : (
+            <p>Loading your trip…</p>
+          )}
+        </div>
+      ) : phase === "error" ? (
+        <div className="flex flex-col items-center gap-3 rounded-xl border border-dashed p-6 text-center text-sm">
+          <p role="alert" className="text-destructive">
+            {error}
+          </p>
+          <Button variant="outline" size="sm" onClick={run}>
+            <RefreshCw /> Try again
+          </Button>
+        </div>
+      ) : items.length ? (
         <ol className="relative flex flex-col gap-3 border-l border-border pl-5">
           {items.map((item) => {
-            const p = lookup(item.placeId)
+            const p = places.get(item.placeId)
             return (
               <li key={item.time + item.placeId} className="relative">
                 <span className="absolute top-4 -left-[26px] size-3 rounded-full border-2 border-background bg-primary" />
@@ -145,16 +302,15 @@ export default function ItineraryPage() {
                       <p className="font-medium">{p?.nameEnglish ?? "Unknown place"}</p>
                       {p && p.name !== p.nameEnglish ? <p className="text-xs text-muted-foreground">{p.name}</p> : null}
                     </div>
-                    {p ? <Badge variant="secondary" className="capitalize">{p.category}</Badge> : null}
+                    <div className="flex shrink-0 flex-col items-end gap-1">
+                      {p?.category ? <Badge variant="secondary" className="capitalize">{p.category}</Badge> : null}
+                      <StatusBadge status={item.status} />
+                    </div>
                   </div>
                   <div className="mt-2 flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-muted-foreground">
                     <span className="inline-flex items-center gap-1"><Clock className="size-3.5" />{formatDuration(item.durationMins)}</span>
                     {item.note ? <span>{item.note}</span> : null}
-                    {SHOW_COSTS && item.cost ? (
-                      <span className="font-medium text-foreground">
-                        {item.cost.amount === 0 ? "Free" : `~${formatMoney(item.cost)}`}
-                      </span>
-                    ) : null}
+                    {SHOW_COSTS ? <Cost item={item} /> : null}
                   </div>
                   {p?.tip ? (
                     <p className="mt-2 flex items-start gap-1.5 rounded-lg bg-muted px-2 py-1.5 text-xs">
@@ -168,9 +324,15 @@ export default function ItineraryPage() {
         </ol>
       ) : (
         <div className="rounded-xl border border-dashed p-6 text-center text-sm text-muted-foreground">
-          {day ? `Activities for ${day.city} will appear here once the itinerary is generated.` : "Nothing planned yet."}
+          {day ? `Nothing planned for ${day.city} on this day.` : "Nothing planned yet."}
         </div>
       )}
+
+      {phase === "ready" ? (
+        <p className="mt-6 text-center text-xs text-muted-foreground">
+          Opening hours checked with Google. Prices are estimates per person.
+        </p>
+      ) : null}
     </PageShell>
   )
 }

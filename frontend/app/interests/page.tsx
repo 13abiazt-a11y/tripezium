@@ -2,11 +2,12 @@
 
 import { useEffect, useState } from "react"
 import { useRouter } from "next/navigation"
-import { Check, Plus, X } from "lucide-react"
+import { Check, Loader2, Plus, X } from "lucide-react"
 
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { PageShell } from "@/components/page-shell"
+import { syncTrip } from "@/lib/api"
 import { interestsFor, isPreset, type Interest } from "@/lib/interests"
 import { loadTrip, saveTrip } from "@/lib/trip-store"
 import type { CountryStop } from "@/lib/types"
@@ -35,6 +36,8 @@ export default function InterestsPage() {
   const [selected, setSelected] = useState<string[]>([])
   const [stops, setStops] = useState<CountryStop[]>([])
   const [draft, setDraft] = useState("")
+  const [saving, setSaving] = useState(false)
+  const [error, setError] = useState("")
 
   const { special, general, places } = interestsFor(stops)
   const custom = selected.filter((s) => !isPreset(s))
@@ -58,9 +61,17 @@ export default function InterestsPage() {
     setDraft("")
   }
 
-  function next() {
-    saveTrip({ interests: selected })
-    router.push("/import")
+  async function next() {
+    setSaving(true)
+    setError("")
+    try {
+      // Create (or update) the trip on the server now, so imported places have a trip to belong to.
+      await syncTrip(saveTrip({ interests: selected }))
+      router.push("/import")
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Something went wrong. Please try again.")
+      setSaving(false)
+    }
   }
 
   return (
@@ -70,9 +81,24 @@ export default function InterestsPage() {
       title="What are you into?"
       subtitle={`Pick a few${places ? ` for ${places}` : ""}, or add your own. You can skip this.`}
       footer={
-        <Button size="lg" className="h-12 w-full text-base" onClick={next}>
-          {selected.length ? `Continue with ${selected.length}` : "Skip for now"}
-        </Button>
+        <div className="flex flex-col gap-2">
+          {error ? (
+            <p role="alert" className="text-sm text-destructive">
+              {error}
+            </p>
+          ) : null}
+          <Button size="lg" className="h-12 w-full text-base" onClick={next} disabled={saving}>
+            {saving ? (
+              <>
+                <Loader2 className="animate-spin" /> Saving your trip…
+              </>
+            ) : selected.length ? (
+              `Continue with ${selected.length}`
+            ) : (
+              "Skip for now"
+            )}
+          </Button>
+        </div>
       }
     >
       <div className="flex flex-col gap-6">

@@ -6,7 +6,7 @@ import datetime as dt
 import logging
 import time
 
-from sqlalchemy import delete, select
+from sqlalchemy import delete, func, select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.orm import Session
 
@@ -172,7 +172,11 @@ def apply_costs(db: Session, itinerary: Itinerary) -> Itinerary:
 
 
 def save(db: Session, trip_id: str, itinerary: Itinerary) -> None:
-    stmt = pg_insert(ItineraryRow).values(trip_id=trip_id, data=itinerary.model_dump(by_alias=True, mode="json"))
+    # clock_timestamp(), not now(): now() is when the *transaction* began, which can be long before a
+    # 30-60s generation finishes. The duplicate-request check in routers/itinerary.py relies on this.
+    stmt = pg_insert(ItineraryRow).values(
+        trip_id=trip_id, data=itinerary.model_dump(by_alias=True, mode="json"), updated_at=func.clock_timestamp(),
+    )
     db.execute(stmt.on_conflict_do_update(
         index_elements=[ItineraryRow.trip_id],
         set_={"data": stmt.excluded.data, "updated_at": stmt.excluded.updated_at},
