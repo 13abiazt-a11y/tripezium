@@ -8,6 +8,8 @@ import json
 import logging
 import re
 import time
+from contextlib import contextmanager
+from contextvars import ContextVar
 from functools import lru_cache
 from typing import Literal
 
@@ -190,25 +192,70 @@ def _client() -> genai.Client:
     return genai.Client(api_key=s.gemini_api_key, http_options=types.HttpOptions(timeout=60_000))
 
 
+# A model that hit its quota is skipped for a while instead of being retried (and failing) on every call.
+QUOTA_COOLDOWN_S = 15 * 60
+_quota_hit_at: dict[str, float] = {}  # model -> time.monotonic() of its last 429
+_OVERLOADED = {500, 502, 503, 504}    # "model overloaded" etc.: the next model is usually fine
+
+
+# Overall deadline for one user request (set by the planner). With fallbacks and a retry, Gemini could
+# otherwise take minutes when models are overloaded; past the deadline we say "busy" instead of hanging.
+MIN_TIME_FOR_A_CALL_S = 25.0
+_deadline: ContextVar[float | None] = ContextVar("gemini_deadline", default=None)
+
+
+@contextmanager
+def deadline(seconds: float):
+    token = _deadline.set(time.monotonic() + seconds)
+    try:
+        yield
+    finally:
+        _deadline.reset(token)
+
+
+def _check_deadline() -> None:
+    d = _deadline.get()
+    if d is not None and d - time.monotonic() < MIN_TIME_FOR_A_CALL_S:
+        raise ApiError(503, "gemini_busy",
+                       "Our AI is very busy right now. Please try again in a minute.")
+
+
+def _models_to_try() -> list[str]:
+    models = get_settings().gemini_models
+    now = time.monotonic()
+    fresh = [m for m in models if now - _quota_hit_at.get(m, -QUOTA_COOLDOWN_S) >= QUOTA_COOLDOWN_S]
+    return fresh or models  # all cooling down: try them all anyway rather than fail without asking
+
+
 def _call(prompt: str) -> str:
-    """Free-tier quotas are per model (~20 requests/day): on a 429, try the next model in GEMINI_FALLBACK_MODELS."""
+    """Free-tier quotas are per model (~20 requests/day): on a 429, try the next model in GEMINI_FALLBACK_MODELS.
+    Also moves on when a model is overloaded (5xx)."""
     config = types.GenerateContentConfig(
         response_mime_type="application/json",
         response_schema=GItinerary,
         temperature=0.6,
     )
-    models = get_settings().gemini_models
+    models = _models_to_try()
     for i, model in enumerate(models):
+        last = i == len(models) - 1
+        _check_deadline()  # don't start a call that can't finish in time
+        t0 = time.perf_counter()
         try:
             resp = _client().models.generate_content(model=model, contents=prompt, config=config)
+            log.info("gemini call ok model=%s %.0fms", model, (time.perf_counter() - t0) * 1000)
             return resp.text or ""
         except Exception as e:
-            if getattr(e, "code", None) == 429 and i < len(models) - 1:
-                log.warning("gemini quota exhausted for %s, trying the next model", model)
-                continue
-            if getattr(e, "code", None) == 429:
+            code = getattr(e, "code", None)
+            if code == 429:
+                _quota_hit_at[model] = time.monotonic()
+                if not last:
+                    log.warning("gemini quota exhausted for %s, trying the next model", model)
+                    continue
                 raise ApiError(503, "gemini_quota",
                                "Our AI has used up its free requests for now. Please try again later.") from e
+            if code in _OVERLOADED and not last:
+                log.warning("gemini %s unavailable (HTTP %s), trying the next model", model, code)
+                continue
             raise
 
 

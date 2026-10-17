@@ -44,7 +44,8 @@ def get_engine() -> Engine:
         pool_pre_ping=True,  # drop dead connections (cloud DBs close idle ones)
         pool_size=5,
         max_overflow=5,
-        connect_args={"connect_timeout": 5},
+        # 5s to connect; any single query is cancelled after 15s so a stuck query can't hang a request.
+        connect_args={"connect_timeout": 5, "options": "-c statement_timeout=15000"},
     )
 
 
