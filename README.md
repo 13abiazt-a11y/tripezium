@@ -171,7 +171,7 @@ Built with:
 
 ## Team
 
-- Stephanie Carvalho — _[role]_
--  — _[role]_
-- _[Name]_ — _[role]_
-- _[Name]_ — _[role]_
+- Stephanie Carvalho 
+- Abia Thangal 
+- Arany Nanthakumaran 
+- Divyaa Nagasundhar 
