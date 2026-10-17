@@ -48,24 +48,24 @@
 }
 
 :root {
-    --background: oklch(1 0 0);
-    --foreground: oklch(0.145 0 0);
-    --card: oklch(1 0 0);
-    --card-foreground: oklch(0.145 0 0);
-    --popover: oklch(1 0 0);
-    --popover-foreground: oklch(0.145 0 0);
-    --primary: oklch(0.205 0 0);
-    --primary-foreground: oklch(0.985 0 0);
-    --secondary: oklch(0.97 0 0);
-    --secondary-foreground: oklch(0.205 0 0);
-    --muted: oklch(0.97 0 0);
-    --muted-foreground: oklch(0.556 0 0);
-    --accent: oklch(0.97 0 0);
-    --accent-foreground: oklch(0.205 0 0);
+    --background: #f6faf7;
+    --foreground: #123d34;
+    --card: #ffffff;
+    --card-foreground: #123d34;
+    --popover: #ffffff;
+    --popover-foreground: #123d34;
+    --primary: #009b72;
+    --primary-foreground: #ffffff;
+    --secondary: #e0f2eb;
+    --secondary-foreground: #123d34;
+    --muted: #e8efeb;
+    --muted-foreground: #637e76;
+    --accent: #c6e996;
+    --accent-foreground: #123d34;
     --destructive: oklch(0.577 0.245 27.325);
-    --border: oklch(0.922 0 0);
-    --input: oklch(0.922 0 0);
-    --ring: oklch(0.708 0 0);
+    --border: #dbe5e0;
+    --input: #dbe5e0;
+    --ring: #009b72;
     --chart-1: oklch(0.87 0 0);
     --chart-2: oklch(0.556 0 0);
     --chart-3: oklch(0.439 0 0);
@@ -126,4 +126,29 @@
   html {
     @apply font-sans;
     }
+}
+
+/* Splash screen (components/splash.tsx) */
+@keyframes tz-pop {
+  from { opacity: 0; transform: scale(0.55) rotate(-10deg); }
+  60% { opacity: 1; transform: scale(1.06) rotate(2deg); }
+  to { opacity: 1; transform: scale(1) rotate(0); }
+}
+@keyframes tz-rise {
+  from { opacity: 0; transform: translateY(14px); }
+  to { opacity: 1; transform: none; }
+}
+@keyframes tz-fade {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+@keyframes tz-load {
+  from { transform: translateX(-100%); }
+  to { transform: none; }
+}
+@keyframes tz-exit {
+  to { transform: translateY(-100%); }
+}
+@media (prefers-reduced-motion: reduce) {
+  .tz-anim { animation-duration: 1ms !important; animation-delay: 0s !important; }
 }

@@ -8,6 +8,8 @@ import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { DestinationPicker } from "@/components/destination-picker"
 import { PageShell } from "@/components/page-shell"
+import { Splash } from "@/components/splash"
+import { CURRENCIES } from "@/lib/money"
 import { daysBetween, summarise, syncRoute } from "@/lib/route"
 import { emptyTrip, loadTrip, saveTrip } from "@/lib/trip-store"
 import type { Trip } from "@/lib/types"
@@ -34,6 +36,13 @@ export default function TripFormPage() {
   const set = (patch: Partial<Trip>) => setTrip((t) => ({ ...t, ...patch }))
   const today = new Date().toISOString().slice(0, 10)
   const cityCount = trip.stops.reduce((n, s) => n + s.cities.length, 0)
+  const exploreCount = trip.stops.filter((s) => s.country && !s.cities.length).length
+  const placesLabel = [
+    cityCount ? `${cityCount} ${cityCount === 1 ? "city" : "cities"}` : "",
+    exploreCount ? `${exploreCount} ${exploreCount === 1 ? "country" : "countries"} to explore` : "",
+  ]
+    .filter(Boolean)
+    .join(" + ")
   const tripDays = daysBetween(trip.startDate, trip.endDate)
 
   function submit(e: React.FormEvent) {
@@ -42,11 +51,11 @@ export default function TripFormPage() {
     const stops = trip.stops.filter((s) => s.country) // drop empty sections
 
     if (!stops.length) errs.stops = "Where are you going? Pick a country."
-    for (const s of stops) if (!s.cities.length) errs[s.id] = "Tap at least one city"
     if (!trip.startDate) errs.startDate = "Pick a start date"
     if (!trip.endDate) errs.endDate = "Pick an end date"
     if (trip.startDate && trip.endDate && trip.endDate < trip.startDate) errs.endDate = "End date is before the start date"
     if (trip.dayEnd <= trip.dayStart) errs.dayEnd = "Day should end after it starts"
+    if (trip.budget.amount !== null && !(trip.budget.amount > 0)) errs.budget = "Enter a budget above 0, or leave it blank"
 
     if (trip.datesPerCity) {
       for (const c of stops.flatMap((s) => s.cities)) {
@@ -67,6 +76,8 @@ export default function TripFormPage() {
   }
 
   return (
+    <>
+    <Splash />
     <PageShell
       step={1}
       title="Plan your trip"
@@ -110,9 +121,9 @@ export default function TripFormPage() {
         <div className="flex flex-col gap-1.5">
           <div className="flex items-baseline justify-between">
             <p className="text-sm font-medium">Where are you going?</p>
-            {cityCount ? (
+            {placesLabel ? (
               <p className="text-xs text-muted-foreground">
-                {cityCount} {cityCount === 1 ? "city" : "cities"}
+                {placesLabel}
                 {tripDays ? ` · ${tripDays} ${tripDays === 1 ? "day" : "days"}` : ""}
               </p>
             ) : null}
@@ -146,6 +157,40 @@ export default function TripFormPage() {
           </span>
         </label>
 
+        <Field label="Budget for the whole trip" htmlFor="budget" error={errors.budget}>
+          <div className="flex gap-2">
+            <select
+              aria-label="Budget currency"
+              className="h-11 rounded-lg border border-input bg-background px-2 text-sm font-medium"
+              value={trip.budget.currency}
+              onChange={(e) => set({ budget: { ...trip.budget, currency: e.target.value } })}
+            >
+              {CURRENCIES.map((c) => (
+                <option key={c} value={c}>
+                  {c}
+                </option>
+              ))}
+            </select>
+            <Input
+              id="budget"
+              type="number"
+              inputMode="decimal"
+              min={0}
+              step="any"
+              placeholder="e.g. 1500"
+              className="h-11 flex-1"
+              value={trip.budget.amount ?? ""}
+              aria-invalid={!!errors.budget}
+              onChange={(e) =>
+                set({ budget: { ...trip.budget, amount: e.target.value === "" ? null : Number(e.target.value) } })
+              }
+            />
+          </div>
+          <p className="text-xs text-muted-foreground">
+            For everyone travelling. Pick your home currency and we’ll keep suggestions in your range.
+          </p>
+        </Field>
+
         <div className="grid grid-cols-2 gap-3">
           <Field label="Start each day" htmlFor="dayStart">
             <Input id="dayStart" type="time" className="h-11" value={trip.dayStart} onChange={(e) => set({ dayStart: e.target.value })} />
@@ -170,5 +215,6 @@ export default function TripFormPage() {
         </Field>
       </form>
     </PageShell>
+    </>
   )
 }

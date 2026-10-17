@@ -6,14 +6,14 @@ import { cn } from "@/lib/utils";
 import type { Metadata, Viewport } from "next"
 
 export const metadata: Metadata = {
-  title: "Trip Planner",
-  description: "Turn travel videos into a day-by-day itinerary.",
+  title: "Tripezium",
+  description: "Plan multi-city trips without the money headache.",
 }
 
 export const viewport: Viewport = {
   width: "device-width",
   initialScale: 1,
-  themeColor: "#ffffff",
+  themeColor: "#f6faf7",
 }
 
 const geist = Geist({subsets:['latin'],variable:'--font-sans'})
