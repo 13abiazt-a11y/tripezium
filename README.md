@@ -1,4 +1,4 @@
-# [Project Name]
+# TRIPEZIUM
 
 > AI trip planner that turns the places you've saved online into a costed, multi-currency itinerary — and adapts when plans change.
 
