@@ -14,6 +14,7 @@ class Settings(BaseSettings):
     wise_api_token: str = ""
     frontend_origins: str = "http://localhost:3000"
     nominatim_user_agent: str = "iku-trip-planner/1.0"
+    google_maps_api_key: str = ""  # optional; used ONLY for opening hours
 
     @property
     def cors_origins(self) -> list[str]:

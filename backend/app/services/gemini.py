@@ -18,6 +18,7 @@ from pydantic import BaseModel, ValidationError
 from ..config import get_settings
 from ..errors import ApiError
 from ..models import PlaceRow, TripRow
+from .holidays import Holiday
 
 log = logging.getLogger("app.gemini")
 
@@ -69,12 +70,13 @@ def trip_dates(trip: TripRow) -> list[dt.date]:
     return [trip.start_date + dt.timedelta(days=i) for i in range(n)]
 
 
-def build_prompt(trip: TripRow, places: list[PlaceRow]) -> str:
+def build_prompt(trip: TripRow, places: list[PlaceRow], holidays: list[Holiday] = ()) -> str:
     dates = trip_dates(trip)
     currency = trip.local_currency or "the destination's local currency (ISO 4217 code)"
     country = f", country {trip.country_code}" if trip.country_code else ""
     interests = ", ".join(trip.interests) or "general sightseeing"
     day_start, day_end = trip.day_start.strftime("%H:%M"), trip.day_end.strftime("%H:%M")
+    holiday_lines = "\n".join(f"- {h.date.isoformat()} ({h.date:%A}): {h.name}" for h in holidays) or "- none"
 
     places_data = json.dumps([
         {"id": p.id, "name": p.name, "nameEnglish": p.name_english, "category": p.category,
@@ -86,10 +88,21 @@ def build_prompt(trip: TripRow, places: list[PlaceRow]) -> str:
 
 TRIP
 - Destination: {trip.destination}{country}
-- Dates ({len(dates)} days): {", ".join(d.isoformat() for d in dates)}
+- Dates ({len(dates)} days): {", ".join(f"{d.isoformat()} ({d:%a})" for d in dates)}
 - Daily window: {day_start} to {day_end}
 - Travellers: {trip.travellers}
 - Interests: {interests}
+
+PUBLIC HOLIDAYS DURING THE TRIP
+{holiday_lines}
+
+OPENING HOURS AND CLOSURES (important)
+- Only schedule a place on a day and at a time when it is normally open. Check the weekday of each date.
+- Respect weekly closing days (for example, many museums close on Mondays; some markets close on Sundays or midweek).
+- Respect seasonal and holiday closures around these dates (for example, in Japan many museums, gardens and
+  government sites close for New Year from about 28 Dec to 3 Jan, and many shops and restaurants close on 1 Jan).
+- On public holidays, prefer places that are open on holidays and suggest holiday-specific experiences
+  (for example, hatsumode, the first shrine visit of the year, in Japan on 1 Jan).
 
 RULES
 1. Return exactly one entry in "days" per date listed above, in the same order, using those exact dates (YYYY-MM-DD).
@@ -162,14 +175,35 @@ def _call(prompt: str) -> str:
     return resp.text or ""
 
 
-def generate_plan(trip: TripRow, places: list[PlaceRow]) -> GItinerary:
-    """Call Gemini; on an invalid response retry once with the problems appended. 502 if still bad."""
+def fix_closures_prompt(previous: GItinerary, closed: list[str]) -> str:
+    return (
+        "\n\nCURRENT ITINERARY (JSON):\n" + previous.model_dump_json()
+        + "\n\nThese stops are CLOSED at their scheduled time, according to their opening hours:\n- "
+        + "\n- ".join(closed)
+        + "\nReturn the full itinerary with each of these moved to a day and time when it is open, or replaced "
+          "with a similar place that is open. Keep every other item the same unless it has to move to make room."
+    )
+
+
+def generate_plan(
+    trip: TripRow,
+    places: list[PlaceRow],
+    holidays: list[Holiday] = (),
+    previous: GItinerary | None = None,
+    closed: list[str] | None = None,
+) -> GItinerary:
+    """Call Gemini; on an invalid response retry once with the problems appended. 502 if still bad.
+
+    With `previous` + `closed`, asks Gemini to revise `previous` so the listed stops aren't closed.
+    """
     s = get_settings()
     if not (s.gemini_api_key and s.gemini_model):
         raise ApiError(503, "gemini_not_configured", "GEMINI_API_KEY and GEMINI_MODEL must be set.")
 
     place_ids = {p.id for p in places}
-    prompt = build_prompt(trip, places)
+    prompt = build_prompt(trip, places, holidays)
+    if previous is not None and closed:
+        prompt += fix_closures_prompt(previous, closed)
     feedback: list[str] = []  # problems with the model's last answer, sent back on the retry
 
     for attempt in (1, 2):

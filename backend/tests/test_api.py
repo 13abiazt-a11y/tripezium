@@ -14,10 +14,11 @@ from app.db import _session_factory, check_db
 from app.main import app
 from app.mocks import demo_itinerary
 from app.models import PlaceRow, TripRow
-from app.routers import itinerary as itinerary_router
 from app.routers import trips as trips_router
 from app.schemas import Itinerary
+from app.services import hours, planner
 from app.services.gemini import GDay, GItem, GItinerary, GNewPlace
+from app.services.holidays import Holiday
 
 _url = get_settings().database_url
 DB_READY = bool(_url) and "<password>" not in _url and check_db() == "ok"
@@ -32,7 +33,10 @@ TRIP_BODY = {
 
 @pytest.fixture
 def client(monkeypatch):
+    # No network in tests: fake geocoding, no holidays, hours check off (individual tests override).
     monkeypatch.setattr(trips_router, "resolve_destination", lambda d: ("JP", "JPY"))
+    monkeypatch.setattr(planner, "get_holidays", lambda db, c, s, e: [])
+    monkeypatch.setattr(hours, "enabled", lambda: False)
     with TestClient(app) as c:
         yield c
 
@@ -148,10 +152,10 @@ def test_generate_itinerary_stores_and_creates_ai_places(client, monkeypatch):
     imported = client.post(f"/trips/{trip_id}/places", json={"places": [{"name": "Senso-ji"}]}).json()["places"][0]
 
     seen = {}
-    def fake_generate(trip, places):
+    def fake_generate(trip, places, holidays=(), previous=None, closed=None):
         seen["places"] = [p.id for p in places]
         return _fake_plan(imported["id"])
-    monkeypatch.setattr(itinerary_router.gemini, "generate_plan", fake_generate)
+    monkeypatch.setattr(planner.gemini, "generate_plan", fake_generate)
 
     assert client.get(f"/trips/{trip_id}/itinerary").json()["error"] == "no_itinerary"
 
@@ -188,3 +192,52 @@ def test_mock_itinerary_totals_add_up():
     assert day_sum == Decimal(str(data["tripTotalHome"]))
     assert next(d for d in data["days"] if d["date"] == "2027-01-01")["holiday"] == "New Year's Day"
     assert {i["status"] for d in data["days"] for i in d["items"]} == {"ok", "check_hours", "closed"}
+
+
+@needs_db
+def test_closed_stop_triggers_one_fix_pass_then_holiday_check(client, monkeypatch):
+    """Day 1's imported place is closed per opening hours -> Gemini is asked once to fix it.
+    The fix moves it to 12:00 (open). Day 2 is a fake holiday: a market there becomes check_hours."""
+    trip_id = client.post("/trips", json=TRIP_BODY).json()["id"]
+    imported = client.post(f"/trips/{trip_id}/places", json={"places": [
+        {"name": "Museum", "category": "museum", "lat": 35.0, "lng": 139.0}]}).json()["places"][0]
+    museum_hours = hours.parse_hours({"periods": [
+        {"open": {"day": d, "hour": 11, "minute": 0}, "close": {"day": d, "hour": 17, "minute": 0}} for d in range(7)
+    ], "weekdayDescriptions": ["11:00 AM - 5:00 PM"] * 7})
+
+    monkeypatch.setattr(hours, "enabled", lambda: True)
+    monkeypatch.setattr(hours, "lookup_all", lambda stops, dest: {
+        s: (museum_hours if s.name == "Museum" else None) for s in stops})
+    monkeypatch.setattr(planner, "get_holidays", lambda db, c, s, e: [Holiday(gemini_date(1), "Test Holiday")])
+
+    def it(time, **kw):
+        return GItem(time=time, durationMins=60, note="", estimatedCost=0, currency="JPY", status="ok",
+                     **{"placeId": None, "newPlace": None, **kw})
+    market = GNewPlace(name="Market", nameEnglish="Market", category="market", lat=35.1, lng=139.1)
+    def plan_with_museum_at(time):
+        return GItinerary(days=[
+            GDay(date="2026-12-01", items=[it(time, placeId=imported["id"])]),
+            GDay(date="2026-12-02", items=[it("10:00", newPlace=market)]),
+            GDay(date="2026-12-03", items=[it("10:00", newPlace=market)]),
+            GDay(date="2026-12-04", items=[it("10:00", newPlace=market)]),
+        ])
+
+    calls = []
+    def fake_generate(trip, places, holidays=(), previous=None, closed=None):
+        calls.append(closed)
+        return plan_with_museum_at("09:00" if previous is None else "12:00")
+    monkeypatch.setattr(planner.gemini, "generate_plan", fake_generate)
+
+    data = client.post(f"/trips/{trip_id}/itinerary").json()
+    assert len(calls) == 2 and calls[0] is None
+    assert "Museum" in calls[1][0] and "11:00 AM - 5:00 PM" in calls[1][0]   # Gemini told what's closed and why
+    museum_item = data["days"][0]["items"][0]
+    assert (museum_item["time"], museum_item["status"]) == ("12:00", "ok")   # fixed and verified open
+    assert data["days"][1]["holiday"] == "Test Holiday"
+    assert data["days"][1]["items"][0]["status"] == "check_hours"             # no hours found + holiday
+    assert data["days"][0]["holiday"] is None
+
+
+def gemini_date(i):
+    import datetime as dt
+    return dt.date(2026, 12, 1) + dt.timedelta(days=i)
