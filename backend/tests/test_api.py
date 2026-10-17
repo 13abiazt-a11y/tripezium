@@ -37,6 +37,7 @@ def client(monkeypatch):
     monkeypatch.setattr(trips_router, "resolve_destination", lambda d: ("JP", "JPY"))
     monkeypatch.setattr(planner, "get_holidays", lambda db, c, s, e: [])
     monkeypatch.setattr(hours, "enabled", lambda: False)
+    monkeypatch.setattr(planner.fx, "get_rate", lambda db, b, q: (Decimal("0.005"), "test"))
     with TestClient(app) as c:
         yield c
 
@@ -166,6 +167,9 @@ def test_generate_itinerary_stores_and_creates_ai_places(client, monkeypatch):
     assert seen["places"] == [imported["id"]]  # imported places are passed to Gemini
     day1 = data["days"][0]["items"]
     assert [i["time"] for i in day1] == ["09:00", "12:00"]
+    assert [i["costHome"] for i in day1] == [5.0, 5.0]           # 1000 JPY * 0.005
+    assert data["days"][0]["dayTotalHome"] == 10.0
+    assert data["tripTotalHome"] == 25.0                          # 5 items * 5.00
     assert day1[0]["placeId"] == imported["id"]
 
     with _session_factory()() as db:

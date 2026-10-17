@@ -13,7 +13,7 @@ from ..errors import ApiError
 from ..ids import new_id
 from ..models import ItineraryRow, PlaceRow, TripRow
 from ..schemas import Itinerary, ItineraryDay, ItineraryItem
-from . import gemini, hours
+from . import budget, fx, gemini, hours
 from .holidays import apply_closure_check, get_holidays
 
 log = logging.getLogger("app.planner")
@@ -110,12 +110,23 @@ def _to_itinerary(
             items.append(ItineraryItem(
                 time=g.time, place_id=place_id, duration_mins=g.durationMins, note=g.note,
                 estimated_cost=g.estimatedCost, currency=g.currency,
-                cost_home=0.0,  # M5: converted by budget.py
+                cost_home=0.0,  # filled in by budget.apply_budget
                 status=final_status(g.status, verdict, category),
             ))
         days.append(ItineraryDay(date=gday.date, holiday=None, items=items, day_total_home=0.0))
 
     return Itinerary(days=days, trip_total_home=0.0, home_currency=trip.home_currency), categories
+
+
+def apply_costs(db: Session, itinerary: Itinerary) -> Itinerary:
+    """One rate per distinct item currency -> home currency, then the Decimal budget maths."""
+    home = itinerary.home_currency
+    rates = {}
+    for currency in {i.currency for d in itinerary.days for i in d.items}:
+        rate, source = fx.get_rate(db, currency, home)
+        rates[currency] = rate
+        log.info("fx %s->%s = %s (%s)", currency, home, rate, source)
+    return budget.apply_budget(itinerary, rates)
 
 
 def save(db: Session, trip_id: str, itinerary: Itinerary) -> None:
@@ -154,6 +165,7 @@ def build_itinerary(db: Session, trip: TripRow) -> Itinerary:
     itinerary, ai_categories = _to_itinerary(db, trip, plan, verdicts, imported)
     categories = {pid: p.category for pid, p in imported.items()} | ai_categories
     apply_closure_check(itinerary, holidays, categories)
+    apply_costs(db, itinerary)
     save(db, trip.id, itinerary)
     db.commit()
     return itinerary

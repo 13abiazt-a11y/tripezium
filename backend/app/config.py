@@ -12,6 +12,7 @@ class Settings(BaseSettings):
     gemini_model: str = ""
     fx_source: str = "public"  # wise | public
     wise_api_token: str = ""
+    wise_api_url: str = ""  # blank = Wise sandbox
     frontend_origins: str = "http://localhost:3000"
     nominatim_user_agent: str = "iku-trip-planner/1.0"
     google_maps_api_key: str = ""  # optional; used ONLY for opening hours
