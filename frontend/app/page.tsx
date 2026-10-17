@@ -6,7 +6,9 @@ import { Minus, Plus } from "lucide-react"
 
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
+import { DestinationPicker } from "@/components/destination-picker"
 import { PageShell } from "@/components/page-shell"
+import { daysBetween, summarise, syncRoute } from "@/lib/route"
 import { emptyTrip, loadTrip, saveTrip } from "@/lib/trip-store"
 import type { Trip } from "@/lib/types"
 
@@ -31,18 +33,36 @@ export default function TripFormPage() {
 
   const set = (patch: Partial<Trip>) => setTrip((t) => ({ ...t, ...patch }))
   const today = new Date().toISOString().slice(0, 10)
+  const cityCount = trip.stops.reduce((n, s) => n + s.cities.length, 0)
+  const tripDays = daysBetween(trip.startDate, trip.endDate)
 
   function submit(e: React.FormEvent) {
     e.preventDefault()
     const errs: Record<string, string> = {}
-    if (!trip.destination.trim()) errs.destination = "Where are you going?"
+    const stops = trip.stops.filter((s) => s.country) // drop empty sections
+
+    if (!stops.length) errs.stops = "Where are you going? Pick a country."
+    for (const s of stops) if (!s.cities.length) errs[s.id] = "Tap at least one city"
     if (!trip.startDate) errs.startDate = "Pick a start date"
     if (!trip.endDate) errs.endDate = "Pick an end date"
     if (trip.startDate && trip.endDate && trip.endDate < trip.startDate) errs.endDate = "End date is before the start date"
     if (trip.dayEnd <= trip.dayStart) errs.dayEnd = "Day should end after it starts"
+
+    if (trip.datesPerCity) {
+      for (const c of stops.flatMap((s) => s.cities)) {
+        if (!c.startDate || !c.endDate) errs[c.id] = "Add dates for this city"
+        else if (c.endDate < c.startDate) errs[c.id] = "End date is before the start date"
+        else if ((trip.startDate && c.startDate < trip.startDate) || (trip.endDate && c.endDate > trip.endDate))
+          errs[c.id] = "These dates are outside your trip"
+      }
+    }
+
     setErrors(errs)
     if (Object.keys(errs).length) return
-    saveTrip({ ...trip, destination: trip.destination.trim() })
+
+    const next: Trip = { ...trip, stops, destination: summarise(stops) }
+    next.route = syncRoute(next, loadTrip())
+    saveTrip(next)
     router.push("/interests")
   }
 
@@ -58,18 +78,6 @@ export default function TripFormPage() {
       }
     >
       <form id="trip-form" onSubmit={submit} className="flex flex-col gap-5" noValidate>
-        <Field label="Destination" htmlFor="destination" error={errors.destination}>
-          <Input
-            id="destination"
-            placeholder="e.g. Tokyo"
-            autoComplete="off"
-            className="h-11"
-            value={trip.destination}
-            aria-invalid={!!errors.destination}
-            onChange={(e) => set({ destination: e.target.value })}
-          />
-        </Field>
-
         <div className="grid grid-cols-2 gap-3">
           <Field label="From" htmlFor="start" error={errors.startDate}>
             <Input
@@ -98,6 +106,45 @@ export default function TripFormPage() {
             />
           </Field>
         </div>
+
+        <div className="flex flex-col gap-1.5">
+          <div className="flex items-baseline justify-between">
+            <p className="text-sm font-medium">Where are you going?</p>
+            {cityCount ? (
+              <p className="text-xs text-muted-foreground">
+                {cityCount} {cityCount === 1 ? "city" : "cities"}
+                {tripDays ? ` · ${tripDays} ${tripDays === 1 ? "day" : "days"}` : ""}
+              </p>
+            ) : null}
+          </div>
+          <p className="text-xs text-muted-foreground">Any order is fine. You can arrange your route later.</p>
+          <div className="mt-1.5">
+            <DestinationPicker
+              stops={trip.stops}
+              onChange={(stops) => set({ stops })}
+              datesPerCity={trip.datesPerCity}
+              tripStart={trip.startDate}
+              tripEnd={trip.endDate}
+              errors={errors}
+            />
+          </div>
+          {errors.stops ? <p className="text-xs text-destructive">{errors.stops}</p> : null}
+        </div>
+
+        <label className="flex items-start gap-3 rounded-xl p-3 ring-1 ring-foreground/10">
+          <input
+            type="checkbox"
+            className="mt-0.5 size-5 shrink-0 accent-primary"
+            checked={trip.datesPerCity}
+            onChange={(e) => set({ datesPerCity: e.target.checked })}
+          />
+          <span className="flex flex-col gap-0.5">
+            <span className="text-sm font-medium">I know my dates for each city</span>
+            <span className="text-xs text-muted-foreground">
+              Leave this off and we’ll suggest how many days to spend in each place.
+            </span>
+          </span>
+        </label>
 
         <div className="grid grid-cols-2 gap-3">
           <Field label="Start each day" htmlFor="dayStart">

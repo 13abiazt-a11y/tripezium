@@ -7,6 +7,9 @@ const KEY = "trip-draft"
 export const emptyTrip: Trip = {
   id: "draft",
   destination: "",
+  stops: [],
+  datesPerCity: false,
+  route: [],
   startDate: "",
   endDate: "",
   dayStart: "09:00",
@@ -18,7 +21,12 @@ export const emptyTrip: Trip = {
 export function loadTrip(): Trip {
   try {
     const raw = localStorage.getItem(KEY)
-    return raw ? { ...emptyTrip, ...JSON.parse(raw) } : emptyTrip
+    const saved = raw ? JSON.parse(raw) : {}
+    const trip: Trip = { ...emptyTrip, ...saved }
+    // Drafts saved before the multi-city picker existed have no stops/route.
+    if (!Array.isArray(trip.stops)) trip.stops = []
+    if (!Array.isArray(trip.route)) trip.route = []
+    return trip
   } catch {
     return emptyTrip
   }

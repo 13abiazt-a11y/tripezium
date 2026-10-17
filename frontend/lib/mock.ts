@@ -4,6 +4,9 @@ import type { ItineraryDay, Place, Trip } from "./types"
 export const mockTrip: Trip = {
   id: "t1",
   destination: "Tokyo",
+  stops: [{ id: "s1", country: "JP", cities: [{ id: "c1", name: "Tokyo" }] }],
+  datesPerCity: false,
+  route: [{ cityId: "c1", city: "Tokyo", country: "JP", days: 3 }],
   startDate: "2026-12-01",
   endDate: "2026-12-03",
   dayStart: "09:00",
