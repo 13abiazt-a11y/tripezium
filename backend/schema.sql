@@ -52,7 +52,7 @@ CREATE TABLE IF NOT EXISTS fx_rates (
   base   TEXT NOT NULL,
   quote  TEXT NOT NULL,
   rate   DOUBLE PRECISION NOT NULL,
-  source TEXT NOT NULL              -- 'wise' | 'public' | 'fallback'
+  source TEXT NOT NULL              -- 'public' (Frankfurter / ECB)
 );
 SELECT create_hypertable('fx_rates', 'time', if_not_exists => TRUE);
 CREATE INDEX IF NOT EXISTS fx_rates_pair_time_idx ON fx_rates (base, quote, time DESC);

@@ -12,13 +12,10 @@ flags public-holiday closures, and costs every item in local and home currency.
 - **Gemini estimates local costs per person. Code does all conversion and totals** (`services/budget.py`,
   `Decimal` throughout, rounded half-up to the penny). Day and trip totals are sums of the rounded item
   values, so the numbers the user sees always add up.
-- **Rates** (`services/fx.py`): cache (last 6h in the `fx_rates` hypertable) -> live -> hardcoded fallback.
-  - `FX_SOURCE=public`: Frankfurter (ECB reference rates, no key), fetched against EUR for full precision.
-  - `FX_SOURCE=wise` + `WISE_API_TOKEN`: Wise rates, **sanity-checked against the market rate**. If Wise is
-    more than 3% off the ECB rate it's rejected (logged) and the market rate is used. If there's no market
-    rate for that currency, Wise is checked against the fallback table with a 15% limit.
-  - Fallback: ECB snapshot from 2026-10-16 for 29 currencies, so the demo never breaks if APIs are down.
-- Every live rate is stored in `fx_rates` with its source (`wise` / `public`), which gives us FX history.
+- **Rates** (`services/fx.py`): cache (last 6h in the `fx_rates` hypertable) -> Frankfurter (ECB reference
+  rates, no key, fetched against EUR for full precision) -> hardcoded fallback (ECB snapshot from
+  2026-10-16 for 29 currencies), so the demo never breaks if the API is down.
+- Every live rate is stored in `fx_rates`, which gives us FX history (e.g. for a rate chart).
 
 ## How opening hours are handled
 
@@ -78,4 +75,4 @@ All JSON is camelCase. Errors are always `{ "error": "<code>", "message": "<text
 FastAPI, Uvicorn, Pydantic, pydantic-settings, SQLAlchemy, psycopg, httpx, Tiger Data / TimescaleDB,
 Nominatim / OpenStreetMap (geocoding), Google Gemini API (`google-genai`), Nager.Date (public holidays),
 Google Places API (New) (opening hours only),
-Frankfurter (ECB exchange rates), Wise API (exchange rates, when enabled). (Full list added as the build progresses.)
+Frankfurter (ECB exchange rates). (Full list added as the build progresses.)
