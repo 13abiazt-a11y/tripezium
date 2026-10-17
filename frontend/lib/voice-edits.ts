@@ -2,7 +2,7 @@
 // The changed days are kept in this browser (localStorage), per trip, on top of
 // the planned itinerary. When C's itinerary endpoint is live, send the same
 // changes there instead.
-import type { Money } from "./types"
+import type { ItemStatus, Money } from "./types"
 
 /** One activity, with the place details inline so the assistant can invent new ones. */
 export type EditableItem = {
@@ -13,7 +13,9 @@ export type EditableItem = {
   durationMins: number
   note?: string
   tip?: string
-  cost?: Money
+  cost?: Money // per person, home currency
+  localCost?: Money // the same in the local currency
+  status?: ItemStatus // opening-hours check from the API
   lat?: number // where it is, when known (for the map)
   lng?: number
 }

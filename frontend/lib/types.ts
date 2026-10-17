@@ -43,6 +43,7 @@ export type Trip = {
   travellers: number
   interests: string[]
   budget: { amount: number | null; currency: string } // whole trip, all travellers; amount null = not set
+  synced?: string // what we last sent to the API (lib/api.ts syncTrip); differs => the server needs an update
 }
 
 export type Place = {
@@ -50,9 +51,9 @@ export type Place = {
   name: string
   nameEnglish: string
   category: string
-  lat: number
-  lng: number
-  confidence: number
+  lat: number | null // null for an imported place we couldn't locate
+  lng: number | null
+  confidence: number | null
   sourceUrl?: string
   timestamp?: string
   tip?: string
@@ -63,10 +64,23 @@ export type ItineraryItem = {
   placeId: string
   durationMins: number
   note?: string
-  cost?: Money // estimated cost per person. Hidden in the UI until SHOW_COSTS is on (lib/flags.ts)
+  cost?: Money // estimated cost per person, in the home currency. Hidden in the UI until SHOW_COSTS is on (lib/flags.ts)
+  localCost?: Money // the same cost in the local currency, as estimated (e.g. ¥2,500)
+  status?: ItemStatus // from the API; absent for sample days
 }
+
+// "check_hours": open on normal weeks, but the hours on that date aren't certain (e.g. a public holiday).
+export type ItemStatus = "ok" | "check_hours" | "closed"
 
 export type ItineraryDay = {
   date: string // YYYY-MM-DD
   items: ItineraryItem[]
+  city?: string | null // which city on a multi-city route
+  holiday?: string | null // e.g. "New Year's Day"
+  total?: Money // the day's cost per person, home currency
+}
+
+export type Itinerary = {
+  days: ItineraryDay[]
+  total: Money // whole trip, per person, home currency
 }

@@ -114,6 +114,8 @@ export function cleanItems(raw: unknown, previous: EditableItem[] = []): Editabl
       // Keep the estimated cost and location when an activity is unchanged.
       const same = previous.find((b) => b.name === item.name)
       if (same?.cost) item.cost = same.cost
+      if (same?.localCost) item.localCost = same.localCost
+      if (same?.status) item.status = same.status
       if (item.lat === undefined && same?.lat !== undefined && same.lng !== undefined) {
         item.lat = same.lat
         item.lng = same.lng

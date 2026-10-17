@@ -153,7 +153,7 @@ async function askGemini(
   // Costs aren't something the assistant edits; keep the prompt small.
   const days = context.days.slice(0, 60).map((d) => ({
     ...d,
-    items: d.items.map((i) => ({ ...i, cost: undefined })), // dropped by JSON.stringify
+    items: d.items.map((i) => ({ ...i, cost: undefined, localCost: undefined, status: undefined })), // dropped by JSON.stringify
   }))
   const prompt = `Traveller and itinerary:\n${JSON.stringify({ ...context, days })}\n\nRequest: "${transcript}"`
 
