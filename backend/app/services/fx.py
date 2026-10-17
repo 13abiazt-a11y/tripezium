@@ -20,7 +20,7 @@ from ..models import fx_rates
 log = logging.getLogger("app.fx")
 
 FRANKFURTER_URL = "https://api.frankfurter.dev/v1/latest"
-WISE_SANDBOX_URL = "https://api.sandbox.transferwise.tech"
+WISE_SANDBOX_URL = "https://api.wise-sandbox.com"  # moved from api.sandbox.transferwise.tech (now 410 Gone)
 CACHE_TTL = dt.timedelta(hours=6)
 
 MAX_WISE_DEVIATION = Decimal("0.03")      # vs the market (ECB) rate
