@@ -157,6 +157,7 @@ FX_API_KEY=
 ### Back end
 
 Python 3.11+. Full details (environment variables, deploy, endpoints, design notes) are in [backend/README.md](backend/README.md).
+The live API is at **https://api.tripezium.club** ([interactive docs](https://api.tripezium.club/docs)).
 
 ```bash
 cd backend
