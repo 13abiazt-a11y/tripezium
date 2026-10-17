@@ -36,6 +36,10 @@ const WORKING: Record<Mode, string> = {
 
 const MAX_SCREENSHOTS = 10
 
+// Below this, the AI isn't sure the place is real or recommended: it starts unticked and is marked.
+const SURE = 0.6
+const isUnsure = (p: Place) => p.confidence !== null && p.confidence < SURE
+
 function PlaceRow({ place, picked, onToggle }: { place: Place; picked?: boolean; onToggle?: () => void }) {
   const body = (
     <>
@@ -53,7 +57,10 @@ function PlaceRow({ place, picked, onToggle }: { place: Place; picked?: boolean;
             <span className="block font-medium">{place.nameEnglish}</span>
             {place.name !== place.nameEnglish ? <span className="block text-xs text-muted-foreground">{place.name}</span> : null}
           </span>
-          {place.category ? <Badge variant="secondary" className="shrink-0 capitalize">{place.category}</Badge> : null}
+          <span className="flex shrink-0 gap-1">
+            {isUnsure(place) ? <Badge variant="outline">Not sure</Badge> : null}
+            {place.category ? <Badge variant="secondary" className="capitalize">{place.category}</Badge> : null}
+          </span>
         </span>
         {place.tip ? <span className="mt-1 block text-xs text-muted-foreground">{place.tip}</span> : null}
         <span className="mt-1 flex flex-wrap gap-x-3 text-xs text-muted-foreground">
@@ -130,7 +137,8 @@ export default function ImportPage() {
       const known = new Set(saved.map((p) => p.nameEnglish.toLowerCase()))
       const fresh = result.places.filter((p) => !known.has(p.nameEnglish.toLowerCase()))
       setReview({ places: fresh, message: result.message })
-      setPicked(new Set(fresh.map((p) => p.id))) // all ticked: untick what you don't want
+      // Ticked unless the AI wasn't sure about it: untick what you don't want, tick a "Not sure" one you do.
+      setPicked(new Set(fresh.filter((p) => !isUnsure(p)).map((p) => p.id)))
     } catch (e) {
       setError(e instanceof Error ? e.message : "Something went wrong. Please try again.")
     } finally {
@@ -283,7 +291,9 @@ export default function ImportPage() {
           <section className="flex flex-col gap-2.5">
             <h2 className="text-sm font-medium">
               {review.places.length
-                ? `Found ${review.places.length} ${review.places.length === 1 ? "place" : "places"}. Untick any you don’t want.`
+                ? `Found ${review.places.length} ${review.places.length === 1 ? "place" : "places"}. Untick any you don’t want${
+                    review.places.some(isUnsure) ? "; ones we’re not sure about start unticked" : ""
+                  }.`
                 : "Nothing new: you’ve already added every place from that."}
             </h2>
             {review.message ? <p className="rounded-lg bg-secondary px-3 py-2 text-xs text-secondary-foreground">{review.message}</p> : null}
