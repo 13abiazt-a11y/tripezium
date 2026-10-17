@@ -13,7 +13,7 @@ Planning a trip means twenty open tabs, a camera roll full of TikTok screenshots
 ## The solution
 
 1. **Sign up** and tell us where and when you're going — countries, cities and dates for each stop.
-2. **Pick interests** from activities that actually make sense for that destination *and season* (no snorkelling suggestions for Norway in winter).
+2. **Pick interests** from activities that actually make sense for that destination *and season* (no silly suggestions).
 3. **Import inspiration** — paste TikTok links or upload screenshots of places you've seen online. We extract the places automatically.
 4. **Get an itinerary** — day-by-day, mapped, and costed in local currency *and* your home currency.
 5. **Edit by chatting** — "swap day 2 and 3", "cheaper dinner in Osaka", "add more food spots".
@@ -53,8 +53,7 @@ Planning a trip means twenty open tabs, a camera roll full of TikTok screenshots
 - **Live translator** — during the trip, speak and get a spoken translation. Context-aware: it knows which city you're in from the itinerary and a **trip clock** (simulated date/time for demo purposes).
 
 ### Extras
-- **Map view** of each day's stops (Leaflet + OpenStreetMap).
-- **Stretch: group mode** — friends join a trip and split costs, each in their own currency.
+- **Map view** of each day's stops (Leaflet + OpenStreetMap)
 
 ---
 
@@ -155,42 +154,6 @@ _[Add install and run commands for frontend and backend once the stack is set.]_
 
 ---
 
-## Hackathon build plan (internal — trim before final submission if needed)
-
-**Key deadlines**
-- Devpost draft: **Sat 17 Oct, 11:00 pm** (aim for 10:30 pm)
-- Final submission (GitHub link + 2-min video): **Sun 18 Oct, 12:00 pm** (aim for 11:45 am)
-- All team members must be present at judging
-
-**Roles** (merge if the team is smaller)
-- **A** — frontend
-- **B** — backend + Gemini agent
-- **C** — voice + money layer
-- **D** — design, pitch, video, Devpost; floats to help
-
-**Saturday**
-1. **11:30–12:30** — Lock scope. Repo, API keys (Gemini, ElevenLabs, Tiger Data, Vultr, GoDaddy), check Wise sandbox signup. Agree the **itinerary JSON schema** together — every item needs a date. D starts Devpost skeleton.
-2. **12:30–16:00** — Core in parallel. A: trip creation (cities + dates) + interest chips. B: itinerary generation endpoint (holidays passed into prompt) + link/screenshot import. C: DB schema + costing/FX service + holidays fetch.
-3. **16:00–17:00** — Integration #1: one ugly end-to-end flow (sign up → trip → interests → links → itinerary).
-4. **17:00–21:00** — Budget view and alerts, chat editing, phrase coach (text-to-speech first).
-5. **21:00–22:30** — Closure checker (reuses the chat-editing re-plan path). D submits Devpost draft by 22:30.
-6. **22:30–02:00** — Deploy to Vultr, connect domain, bug fixes.
-7. **02:00–07:00** — Sleep in shifts.
-
-**Sunday**
-1. **07:00–09:30** — Translation mode with trip clock, map view, UI polish, seed demo trip.
-2. **09:30** — **Feature freeze.**
-3. **09:30–11:00** — Record video, finish README credits, final deploy.
-4. **11:00–11:45** — Submit on Devpost, tick every eligible side track.
-
-**Rules to remember**
-- One main track (Wise) + any eligible side tracks
-- No cross-posting to other events
-- No previous projects — everything built this weekend
-- Credit all frameworks and APIs in this README
-- Teams of up to 4
-
----
 
 ## Credits
 
@@ -208,7 +171,7 @@ Built with:
 
 ## Team
 
-- _[Name]_ — _[role]_
-- _[Name]_ — _[role]_
+- Stephanie Carvalho — _[role]_
+-  — _[role]_
 - _[Name]_ — _[role]_
 - _[Name]_ — _[role]_
