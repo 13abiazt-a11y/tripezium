@@ -71,6 +71,7 @@ The password in `DATABASE_URL` can contain special characters like `@`; the app 
 | `GET /health` | `{ "status": "ok", "db": "ok" }`, or 503 with `"status": "degraded"` if the DB is unreachable |
 | `POST /trips` | Body: Trip without `id`. Returns 201 + full Trip. Resolves country + currency via Nominatim |
 | `GET /trips/{id}` | Returns Trip |
+| `GET /trips/{id}/places` | `{ "places": [Place] }`: imported places first, then stops Gemini added. Use it to turn itinerary `placeId`s into names and map pins (re-fetch after each generation) |
 | `POST /trips/{id}/places` | Body `{ "places": [Place] }`. Missing `id`s are assigned. Returns `{ "places": [Place] }` |
 | `POST /trips/{id}/itinerary` | Generates (or regenerates) and stores the itinerary with Gemini. **Takes ~20-30s**: show a loading state. 502 `generation_failed` if Gemini fails twice |
 | `GET /trips/{id}/itinerary` | Returns the stored itinerary (fast). 404 `no_itinerary` if none generated yet |

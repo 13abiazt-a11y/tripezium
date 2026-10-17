@@ -296,3 +296,32 @@ def test_all_saved_places_used_means_no_extra_call(client, monkeypatch):
     monkeypatch.setattr(planner.gemini, "generate_plan", fake_generate)
     assert client.post(f"/trips/{trip_id}/itinerary").status_code == 200
     assert len(calls) == 1
+
+
+@needs_db
+def test_get_places_resolves_every_itinerary_place_id(client, monkeypatch):
+    trip_id = client.post("/trips", json=TRIP_BODY).json()["id"]
+    assert client.get(f"/trips/{trip_id}/places").json() == {"places": []}
+
+    imported = client.post(f"/trips/{trip_id}/places", json={"places": [
+        {"name": "Senso-ji", "sourceUrl": "https://tiktok.com/x", "timestamp": "00:12"}]}).json()["places"][0]
+    monkeypatch.setattr(planner.gemini, "generate_plan",
+                        lambda trip, places, holidays=(), previous=None, closed=None, missing=None: _fake_plan(imported["id"]))
+    itinerary = client.post(f"/trips/{trip_id}/itinerary").json()
+
+    r = client.get(f"/trips/{trip_id}/places")
+    assert r.status_code == 200
+    places = r.json()["places"]
+    assert places[0] == imported                          # imported first, unchanged, camelCase
+    by_id = {p["id"]: p for p in places}
+    for day in itinerary["days"]:
+        for item in day["items"]:
+            assert item["placeId"] in by_id               # front end can resolve every stop
+    ai = [p for p in places if p["id"] != imported["id"]]
+    assert ai and all(p["lat"] is not None and p["sourceUrl"] is None for p in ai)
+
+
+@needs_db
+def test_get_places_unknown_trip_404(client):
+    r = client.get("/trips/t_nope/places")
+    assert r.status_code == 404 and r.json()["error"] == "not_found"
