@@ -12,9 +12,10 @@ from ..ids import new_id
 from ..mocks import DEMO_TRIP_ID
 from ..models import ItineraryRow, PlaceRow, TripRow
 from ..ratelimit import write_limit
-from ..schemas import RouteLeg, Trip, TripCreate, TripUpdate
+from ..schemas import Journey, RouteLeg, Stay, Trip, TripCreate, TripUpdate
 from ..services.cities import canonical_city
-from ..services.geo import currency_for, resolve_destination
+from ..services.geo import currency_for, geocode, resolve_destination
+from ..services.route import day_legs as route_days
 
 router = APIRouter(prefix="/trips", tags=["trips"])
 
@@ -24,7 +25,8 @@ READ_ONLY_TRIPS = {DEMO_TRIP_ID}
 # Changing any of these makes the stored itinerary wrong, so PATCH deletes it (and the AI-suggested
 # stops). The next GET /itinerary then says no_itinerary and the front end regenerates.
 # `travellers` isn't here: costs are per person, so the plan stays valid.
-REPLAN_FIELDS = {"destination", "route", "start_date", "end_date", "day_start", "day_end", "interests", "home_currency"}
+REPLAN_FIELDS = {"destination", "route", "start_date", "end_date", "day_start", "day_end", "interests", "home_currency",
+                 "stays", "transport"}
 
 
 def trip_out(row: TripRow) -> Trip:
@@ -39,7 +41,34 @@ def trip_out(row: TripRow) -> Trip:
         interests=list(row.interests),
         home_currency=row.home_currency,
         route=[RouteLeg(city=r["city"], country=r["country"], days=r["days"]) for r in row.route or []],
+        stays=[Stay.model_validate(s) for s in row.stays or []],
+        transport=[Journey.model_validate(t) for t in row.transport or []],
     )
+
+
+def _stays_json(stays: list[Stay], trip: TripRow) -> list[dict]:
+    """Stays as stored, with coordinates looked up (OpenStreetMap) for any the user didn't place.
+    The search is limited to the country the traveller is in on the check-in date."""
+    country_on = {d: leg.country for d, leg in route_days(trip)}
+    out = []
+    for s in stays:
+        country = country_on.get(s.check_in) or trip.country_code
+        if s.lat is None or s.lng is None:
+            hit = geocode(", ".join(x for x in (s.name, s.address, s.city) if x), country)
+            if hit is None and s.address:
+                hit = geocode(", ".join(x for x in (s.address, s.city) if x), country)
+            if hit is not None:
+                s = s.model_copy(update={"lat": hit["lat"], "lng": hit["lng"]})
+        out.append(s.model_dump(by_alias=True, mode="json"))
+    return out
+
+
+def _transport_json(transport: list[Journey]) -> list[dict]:
+    return [t.model_dump(by_alias=True, mode="json") for t in sorted(transport, key=lambda t: t.departs)]
+
+
+def current_stays(row: TripRow) -> list[Stay]:
+    return [Stay.model_validate(s) for s in row.stays or []]
 
 
 def get_trip_or_404(db: Session, trip_id: str) -> TripRow:
@@ -86,7 +115,9 @@ def create_trip(body: TripCreate, db: Session = Depends(get_db)) -> Trip:
         interests=body.interests,
         home_currency=body.home_currency,
         route=route_json,
+        transport=_transport_json(body.transport),
     )
+    row.stays = _stays_json(body.stays, row)
     db.add(row)
     db.commit()
     return trip_out(row)
@@ -120,6 +151,10 @@ def update_trip(trip_id: str, body: TripUpdate, db: Session = Depends(get_db)) -
     row.start_date, row.end_date = merged.start_date, merged.end_date
     row.day_start, row.day_end = dt.time.fromisoformat(merged.day_start), dt.time.fromisoformat(merged.day_end)
     row.travellers, row.interests, row.home_currency = merged.travellers, merged.interests, merged.home_currency
+    if "stays" in changes and merged.stays != current_stays(row):
+        row.stays = _stays_json(merged.stays, row)
+    if "transport" in changes:
+        row.transport = _transport_json(merged.transport)
 
     after = trip_out(row).model_dump(exclude={"id"})
     if any(after[f] != current[f] for f in REPLAN_FIELDS):

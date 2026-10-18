@@ -2,8 +2,23 @@
 
 import Link from "next/link"
 import { useCallback, useEffect, useRef, useState } from "react"
-import { CalendarHeart, Clock, Compass, Lightbulb, Loader2, RefreshCw, Undo2, Wallet } from "lucide-react"
+import {
+  BedDouble,
+  CalendarHeart,
+  CircleAlert,
+  CircleCheck,
+  Clock,
+  Compass,
+  Lightbulb,
+  Loader2,
+  Plane,
+  RefreshCw,
+  TrainFront,
+  Undo2,
+  Wallet,
+} from "lucide-react"
 
+import { BookingsEditor } from "@/components/bookings-editor"
 import { Badge } from "@/components/ui/badge"
 import { Button, buttonVariants } from "@/components/ui/button"
 import { BudgetCard } from "@/components/budget-card"
@@ -13,7 +28,8 @@ import { PageShell } from "@/components/page-shell"
 import { RouteEditor } from "@/components/route-editor"
 import { categoryColour, TripMap, type MapCity, type MapMode, type MapStop } from "@/components/trip-map"
 import { VoiceEditButton } from "@/components/VoiceEditButton"
-import { DEMO_TRIP_ID, generateItinerary, getItinerary, getPlaces, getTrip, syncTrip } from "@/lib/api"
+import { checkDays, DEMO_TRIP_ID, generateItinerary, getItinerary, getPlaces, getTrip, syncTrip } from "@/lib/api"
+import { describeJourney, journeysOn, kindLabel, stayOn } from "@/lib/bookings"
 import { countryName, flagOf } from "@/lib/destinations"
 import { SHOW_COSTS } from "@/lib/flags"
 import { cityKey, useCityCoords } from "@/lib/geo"
@@ -22,11 +38,90 @@ import { narrateDay } from "@/lib/narration"
 import { addDays, daysBetween, planDays, recommendRoute } from "@/lib/route"
 import { loadTrip, saveTrip } from "@/lib/trip-store"
 import { buildDays, citySegments, planTotals, withVoiceChanges } from "@/lib/plan-view"
-import type { Itinerary, Place, RouteStop, Trip } from "@/lib/types"
+import type { Itinerary, Place, RouteStop, Stay, Trip } from "@/lib/types"
 import { useDayStops } from "@/lib/use-day-stops"
-import { loadOverrides, mergeChanges, saveOverrides, type Overrides, type VoiceEditResult } from "@/lib/voice-edits"
+import {
+  loadOverrides,
+  mergeChanges,
+  saveOverrides,
+  type EditableItem,
+  type Overrides,
+  type VoiceEditResult,
+} from "@/lib/voice-edits"
 
 type Phase = "loading" | "generating" | "ready" | "error"
+
+/** The day's own bookings: where you're staying, and journeys leaving or arriving today. */
+function DayBookings({ date, trip }: { date: string; trip: Trip }) {
+  const stay = stayOn(date, trip.stays)
+  const journeys = journeysOn(date, trip.transport)
+  if (!stay && !journeys.length) return null
+  return (
+    <div className="mb-3 flex flex-col gap-1.5 rounded-xl bg-card p-3 text-sm ring-1 ring-foreground/10">
+      {journeys.map((j, i) => {
+        const Icon = j.kind === "flight" ? Plane : TrainFront
+        return (
+          <p key={i} className="flex items-start gap-2">
+            <Icon className="mt-0.5 size-4 shrink-0 text-primary" />
+            <span>
+              <span className="font-medium">
+                {kindLabel(j.kind)}
+                {j.reference ? ` ${j.reference}` : ""}
+              </span>{" "}
+              · {describeJourney(j)}
+            </span>
+          </p>
+        )
+      })}
+      {stay ? (
+        <p className="flex items-start gap-2">
+          <BedDouble className="mt-0.5 size-4 shrink-0 text-primary" />
+          <span>
+            {stay.checkIn === date ? "Check in at " : "Staying at "}
+            <span className="font-medium">{stay.name}</span>
+            {stay.checkOut === date ? " · check out today" : ""}
+          </span>
+        </p>
+      ) : null}
+    </div>
+  )
+}
+
+/** What the server found when it checked a voice change. */
+function CheckNote({ problems, checking }: { problems?: string[]; checking: boolean }) {
+  if (checking)
+    return (
+      <p className="mb-3 flex items-center gap-1.5 text-xs text-muted-foreground">
+        <Loader2 className="size-3.5 animate-spin" /> Checking opening hours, travel time and prices…
+      </p>
+    )
+  if (!problems) return null
+  if (!problems.length)
+    return (
+      <p className="mb-3 flex items-center gap-1.5 text-xs text-muted-foreground">
+        <CircleCheck className="size-3.5 text-primary" /> Change checked: open at those times, with time to get between
+        stops.
+      </p>
+    )
+  return (
+    <div className="mb-3 rounded-xl bg-secondary p-3 text-sm text-secondary-foreground">
+      <p className="mb-1 flex items-center gap-1.5 font-medium">
+        <CircleAlert className="size-4 text-destructive" /> We checked your change
+      </p>
+      <ul className="list-disc pl-5 text-xs">
+        {problems.map((p) => (
+          <li key={p}>{p}</li>
+        ))}
+      </ul>
+    </div>
+  )
+}
+
+/** The accommodation as a starting point for the day's first stop (needs coordinates). */
+function stayStart(stay: Stay | null, dayStart?: string): EditableItem | null {
+  if (!stay || stay.lat == null || stay.lng == null) return null
+  return { time: dayStart || "09:00", name: stay.name, category: "stay", durationMins: 0, lat: stay.lat, lng: stay.lng }
+}
 
 export default function ItineraryPage() {
   const [trip, setTrip] = useState<Trip | null>(null)
@@ -39,6 +134,8 @@ export default function ItineraryPage() {
   const [overrides, setOverrides] = useState<Overrides>({})
   const [mapMode, setMapMode] = useState<MapMode>("day")
   const [selectedStop, setSelectedStop] = useState<number | null>(null)
+  const [checking, setChecking] = useState(false)
+  const [checkNotes, setCheckNotes] = useState<Record<string, string[]>>({}) // by date, after a voice change
   const started = useRef(false) // dev Strict Mode runs effects twice: never ask Gemini twice
 
   const fail = (e: unknown) => {
@@ -157,19 +254,43 @@ export default function ItineraryPage() {
     dayStart: trip?.dayStart,
     currency: itinerary?.total.currency, // new activities get prices in this currency
     dayEnd: trip?.dayEnd,
+    bookings: { stays: trip?.stays ?? [], transport: trip?.transport ?? [] },
     days: shown.map(({ day, date, city, country, items }) => ({ day, date, city, country, items })),
   })
 
-  const onVoiceEdit = (result: VoiceEditResult) => {
+  const onVoiceEdit = async (result: VoiceEditResult) => {
     if (!result.changes.length || !trip) return
-    // TODO(A+C): send result.changes to the API so the server plan changes too.
     const next = mergeChanges(baseDays, overrides, result.changes)
     setOverrides(next)
     saveOverrides(trip.id, next)
     selectDay(Math.min(...result.changes.map((c) => c.day)) - 1) // show the change
+
+    // The server checks the changed days (opening hours, travel time, holidays, prices) and saves
+    // them into the plan. The demo trip is read-only: there the checked days stay in this browser.
+    const changed = result.changes.map((c) => next[baseDays[c.day - 1]?.date]).filter(Boolean)
+    if (!changed.length) return
+    setChecking(true)
+    try {
+      const out = await checkDays(trip.id, changed)
+      setCheckNotes((n) => ({ ...n, ...Object.fromEntries(out.days.map((d) => [d.date, d.problems])) }))
+      const after = { ...next }
+      for (const d of out.days) {
+        if (out.saved) delete after[d.date] // it's in the stored plan now
+        else if (after[d.date]) after[d.date] = { ...after[d.date], items: d.items }
+      }
+      saveOverrides(trip.id, after)
+      if (out.saved) await loadItinerary(trip.id)
+      else setOverrides(after)
+    } catch {
+      const note = ["We couldn't check this change just now, so opening hours and prices may be out of date."]
+      setCheckNotes((n) => ({ ...n, ...Object.fromEntries(changed.map((d) => [d.date, note])) }))
+    } finally {
+      setChecking(false)
+    }
   }
 
   const undoVoice = () => {
+    setCheckNotes({})
     setOverrides({})
     if (trip) saveOverrides(trip.id, {})
   }
@@ -235,9 +356,20 @@ export default function ItineraryPage() {
         />
       ) : null}
 
+      {trip ? (
+        <BookingsEditor
+          stays={trip.stays ?? []}
+          transport={trip.transport ?? []}
+          startDate={trip.startDate}
+          endDate={trip.endDate}
+          readOnly={!editable}
+          onChange={(patch) => update(patch)}
+        />
+      ) : null}
+
       {routeChanged && phase !== "generating" ? (
         <div className="mb-4 flex items-center justify-between gap-3 rounded-xl bg-secondary p-3 text-sm text-secondary-foreground">
-          <p>You changed your route. Update the plan to match?</p>
+          <p>You changed your trip. Update the plan to match?</p>
           <Button size="sm" onClick={applyRouteChange}>
             <RefreshCw /> Update
           </Button>
@@ -322,6 +454,9 @@ export default function ItineraryPage() {
         </div>
       ) : null}
 
+      {plan && trip ? <DayBookings date={plan.date} trip={trip} /> : null}
+      {plan ? <CheckNote problems={checkNotes[plan.date]} checking={checking && isEdited} /> : null}
+
       {SHOW_COSTS && dayTotals[activeIndex] && items.length ? (
         <p className="mb-3 inline-flex items-center gap-1.5 text-sm font-medium">
           <Wallet className="size-4 text-primary" /> About {formatMoney(dayTotals[activeIndex]!)} per person today
@@ -353,7 +488,16 @@ export default function ItineraryPage() {
         <ol className="relative flex flex-col gap-3 border-l border-border pl-5">
           {items.map((item, i) => (
             <li key={`${item.time}-${item.name}-${i}`} id={`stop-${i + 1}`} className="relative scroll-mt-4">
-              {i > 0 ? <TravelHint prev={items[i - 1]} item={item} className="mb-1.5" /> : null}
+              {i > 0 ? (
+                <TravelHint prev={items[i - 1]} item={item} className="mb-1.5" />
+              ) : plan && trip && stayStart(stayOn(plan.date, trip.stays), trip.dayStart) ? (
+                <TravelHint
+                  prev={stayStart(stayOn(plan.date, trip.stays), trip.dayStart)!}
+                  item={item}
+                  from="your accommodation"
+                  className="mb-1.5"
+                />
+              ) : null}
               <span
                 aria-hidden
                 style={{ background: categoryColour(item.category) }}

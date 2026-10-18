@@ -32,6 +32,43 @@ class RouteLeg(CamelModel):
     days: int = Field(ge=1, le=MAX_TRIP_DAYS)
 
 
+LOCAL_DATETIME = r"^\d{4}-\d{2}-\d{2}T([01]\d|2[0-3]):[0-5]\d$"  # "2026-12-30T09:30", local time where it happens
+MAX_BOOKINGS = 30
+
+
+class Stay(CamelModel):
+    """Where the traveller is staying (optional). Coordinates are looked up from the name/address if missing."""
+    name: str = Field(min_length=1, max_length=200)
+    address: str | None = Field(None, max_length=300)
+    city: str | None = Field(None, max_length=100)
+    check_in: dt.date
+    check_out: dt.date
+    lat: float | None = Field(None, ge=-90, le=90)
+    lng: float | None = Field(None, ge=-180, le=180)
+
+    @model_validator(mode="after")
+    def _order(self):
+        if self.check_out < self.check_in:
+            raise ValueError("checkOut must be on or after checkIn")
+        return self
+
+
+class Journey(CamelModel):
+    """A flight, train, bus... the traveller has booked (optional): the way in, the way home, or between cities."""
+    kind: Literal["flight", "train", "bus", "ferry", "car", "other"] = "flight"
+    origin: str = Field(min_length=1, max_length=120)       # "London Heathrow", "Tokyo Station"
+    destination: str = Field(min_length=1, max_length=120)
+    departs: str = Field(pattern=LOCAL_DATETIME)
+    arrives: str | None = Field(None, pattern=LOCAL_DATETIME)
+    reference: str | None = Field(None, max_length=40)       # "BA7", "Nozomi 21"
+
+    @model_validator(mode="after")
+    def _order(self):
+        if self.arrives and self.arrives < self.departs:  # same format, so strings compare correctly
+            raise ValueError("arrives must be after departs")
+        return self
+
+
 class TripCreate(CamelModel):
     destination: str = Field(min_length=1, max_length=200)  # display summary, e.g. "France & Italy"
     # Optional. Empty = a single-destination trip (the original contract). When given, the legs'
@@ -44,6 +81,8 @@ class TripCreate(CamelModel):
     travellers: int = Field(1, ge=1, le=50)
     interests: list[str] = Field(default_factory=list, max_length=20)
     home_currency: str = Field("GBP", pattern=CURRENCY)
+    stays: list[Stay] = Field(default_factory=list, max_length=MAX_BOOKINGS)
+    transport: list[Journey] = Field(default_factory=list, max_length=MAX_BOOKINGS)
 
     @model_validator(mode="after")
     def _check_ranges(self):
@@ -76,6 +115,8 @@ class TripUpdate(CamelModel):
     travellers: int | None = Field(None, ge=1, le=50)
     interests: list[str] | None = Field(None, max_length=20)
     home_currency: str | None = Field(None, pattern=CURRENCY)
+    stays: list[Stay] | None = Field(None, max_length=MAX_BOOKINGS)  # send [] to clear
+    transport: list[Journey] | None = Field(None, max_length=MAX_BOOKINGS)
 
 
 # --- Place --------------------------------------------------------------
@@ -139,6 +180,63 @@ class Itinerary(CamelModel):
     days: list[ItineraryDay]
     trip_total_home: float
     home_currency: str = Field(pattern=CURRENCY)
+
+
+# --- Checking edited days (voice / typed changes on the itinerary page) ---
+
+class Money(CamelModel):
+    amount: float = Field(ge=0)
+    currency: str = Field(pattern=CURRENCY)
+
+
+class EditItemIn(CamelModel):
+    """A stop as the itinerary page edits it: place details inline, so the assistant can add new places."""
+    time: str = Field(pattern=HHMM)
+    name: str = Field(min_length=1, max_length=300)
+    local_name: str | None = Field(None, max_length=300)
+    category: str | None = Field(None, max_length=50)
+    duration_mins: int = Field(ge=0, le=24 * 60)
+    note: str | None = Field(None, max_length=500)
+    tip: str | None = Field(None, max_length=500)
+    lat: float | None = Field(None, ge=-90, le=90)
+    lng: float | None = Field(None, ge=-180, le=180)
+    status: Status | None = None  # the previous check, if the stop was already in the plan
+    local_cost: Money | None = None  # per person, as already estimated
+    estimated_cost: float | None = Field(None, ge=0)  # per person in the day's local currency (new stops)
+
+
+class EditDayIn(CamelModel):
+    date: dt.date
+    city: str | None = Field(None, max_length=100)
+    country: str | None = Field(None, pattern=r"^[A-Z]{2}$")
+    items: list[EditItemIn] = Field(max_length=25)
+
+
+class PlanCheckIn(CamelModel):
+    days: list[EditDayIn] = Field(min_length=1, max_length=MAX_TRIP_DAYS)
+
+
+class EditItemOut(EditItemIn):
+    status: Status
+    cost: Money | None = None  # per person, home currency; null if we couldn't price it
+    travel_mins: int | None = None
+    travel_mode: Literal["walk", "transit", "train"] | None = None
+    travel_km: float | None = None
+
+
+class EditDayOut(CamelModel):
+    date: dt.date
+    city: str | None = None
+    country: str | None = None
+    holiday: str | None = None
+    items: list[EditItemOut]
+    total: Money | None = None  # per person, home currency
+    problems: list[str] = Field(default_factory=list)  # e.g. "Ends at 22:30, after your day ends at 21:00"
+
+
+class PlanCheckOut(CamelModel):
+    saved: bool  # false for read-only trips (the demo): checked, but only kept in the browser
+    days: list[EditDayOut]
 
 
 # --- Imports ------------------------------------------------------------

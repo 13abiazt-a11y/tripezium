@@ -74,3 +74,8 @@ CREATE TABLE IF NOT EXISTS geocode_cache (
 
 -- Multi-city trips: the route in travel order, [{"city","country","days","currency"}]. [] = one destination.
 ALTER TABLE trips ADD COLUMN IF NOT EXISTS route JSONB NOT NULL DEFAULT '[]';
+
+-- The traveller's own bookings (optional). stays: [{"name","address","city","checkIn","checkOut","lat","lng"}];
+-- transport: [{"kind","origin","destination","departs","arrives","reference"}] with local "YYYY-MM-DDTHH:MM" times.
+ALTER TABLE trips ADD COLUMN IF NOT EXISTS stays JSONB NOT NULL DEFAULT '[]';
+ALTER TABLE trips ADD COLUMN IF NOT EXISTS transport JSONB NOT NULL DEFAULT '[]';

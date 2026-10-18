@@ -3,7 +3,8 @@
 import { loadCities } from "./destinations"
 import { addDays, daysBetween, suggestCitiesFor } from "./route"
 import { loadTrip, saveTrip } from "./trip-store"
-import type { Itinerary, ItineraryDay, ItemStatus, Place, Trip } from "./types"
+import type { Itinerary, ItineraryDay, ItemStatus, Journey, Money, Place, Stay, Trip } from "./types"
+import type { EditableItem } from "./voice-edits"
 
 // Inlined at build time (must be written out literally). Defaults to the live API.
 const BASE = (process.env.NEXT_PUBLIC_API_URL || "https://api.tripezium.club").replace(/\/$/, "")
@@ -54,6 +55,8 @@ type ApiTripIn = {
   travellers: number
   interests: string[]
   homeCurrency: string
+  stays: Stay[]
+  transport: Journey[]
 }
 
 type ApiPlace = {
@@ -133,6 +136,8 @@ async function payload(trip: Trip): Promise<ApiTripIn> {
     travellers: trip.travellers,
     interests: trip.interests,
     homeCurrency: trip.budget?.currency || "GBP",
+    stays: trip.stays ?? [],
+    transport: trip.transport ?? [],
   }
 }
 
@@ -164,17 +169,24 @@ async function syncNow(trip: Trip): Promise<Trip> {
   if (isServerTrip(trip.id) && trip.synced === key) return trip
 
   let id = trip.id
+  let saved: ApiTripIn | null = null
   if (isServerTrip(id)) {
     try {
-      await request(`/trips/${id}`, send("PATCH", body))
+      saved = await request<ApiTripIn>(`/trips/${id}`, send("PATCH", body))
     } catch (e) {
       if (!(e instanceof ApiError && e.status === 404)) throw e
       id = "" // the server doesn't know it any more: start a new one
     }
   }
-  if (!isServerTrip(id)) id = (await request<{ id: string }>("/trips", send("POST", body))).id
+  if (!isServerTrip(id)) {
+    const created = await request<ApiTripIn & { id: string }>("/trips", send("POST", body))
+    id = created.id
+    saved = created
+  }
 
-  return saveTrip({ id, synced: key, endDate: body.endDate })
+  // Keep the stays as the server has them: it found their coordinates (for the map and travel times).
+  const stays = saved?.stays ?? body.stays
+  return saveTrip({ id, synced: JSON.stringify({ ...body, stays }), endDate: body.endDate, stays })
 }
 
 /** A trip from the server, in the front end's shape (e.g. to show the demo trip). */
@@ -193,6 +205,8 @@ export async function getTrip(id: string): Promise<Trip> {
     travellers: t.travellers,
     interests: t.interests,
     budget: { amount: null, currency: t.homeCurrency },
+    stays: t.stays ?? [],
+    transport: t.transport ?? [],
   }
 }
 
@@ -253,6 +267,87 @@ export async function getItinerary(tripId: string): Promise<Itinerary | null> {
 /** Plan the trip with Gemini. Slow (roughly 25-60 s): show a loading state. */
 export async function generateItinerary(tripId: string): Promise<Itinerary> {
   return toItinerary(await request<ApiItinerary>(`/trips/${tripId}/itinerary`, send("POST")))
+}
+
+// --- Checking edited days ------------------------------------------------------------
+
+export type CheckedDay = {
+  date: string
+  city: string | null
+  country: string | null
+  holiday: string | null
+  items: EditableItem[]
+  total: Money | null // per person, home currency; null if a stop couldn't be priced
+  problems: string[] // e.g. "teamLab Planets isn't open at 08:00 (…)"
+}
+
+type ApiCheckedItem = {
+  time: string
+  name: string
+  localName?: string | null
+  category?: string | null
+  durationMins: number
+  note?: string | null
+  tip?: string | null
+  lat?: number | null
+  lng?: number | null
+  status: ItemStatus
+  localCost?: Money | null
+  cost?: Money | null
+}
+
+/**
+ * Days a voice or typed edit changed: the server checks travel time, opening hours, holidays and
+ * costs, and saves them into the plan (`saved`; never for the read-only demo trip).
+ */
+export async function checkDays(
+  tripId: string,
+  days: { date: string; city: string; country: string; items: EditableItem[] }[],
+): Promise<{ saved: boolean; days: CheckedDay[] }> {
+  const body = {
+    days: days.map((d) => ({
+      date: d.date,
+      city: d.city || null,
+      country: /^[A-Z]{2}$/.test(d.country) ? d.country : null,
+      items: d.items.map((i) => ({
+        time: i.time,
+        name: i.name,
+        localName: i.localName ?? null,
+        category: i.category || null,
+        durationMins: i.durationMins,
+        note: i.note ?? null,
+        tip: i.tip ?? null,
+        lat: i.lat ?? null,
+        lng: i.lng ?? null,
+        status: i.status ?? null,
+        // A new stop has only the assistant's estimate in the trip currency: the server converts it.
+        localCost: i.localCost ?? i.cost ?? null,
+      })),
+    })),
+  }
+  const out = await request<{ saved: boolean; days: (Omit<CheckedDay, "items"> & { items: ApiCheckedItem[] })[] }>(
+    `/trips/${tripId}/itinerary/check`,
+    send("POST", body),
+  )
+  return {
+    saved: out.saved,
+    days: out.days.map((d) => ({
+      ...d,
+      items: d.items.map((i) => ({
+        time: i.time,
+        name: i.name,
+        ...(i.localName ? { localName: i.localName } : {}),
+        category: i.category || "activity",
+        durationMins: i.durationMins,
+        ...(i.note ? { note: i.note } : {}),
+        ...(i.tip ? { tip: i.tip } : {}),
+        ...(i.lat != null && i.lng != null ? { lat: i.lat, lng: i.lng } : {}),
+        status: i.status,
+        ...(i.cost ? { cost: i.cost } : {}),
+        ...(i.localCost ? { localCost: i.localCost } : {}),
+      })),
+    })),
+  }
 }
 
 // --- Imports (D's endpoints): link / caption / screenshots -> background job -> places --------

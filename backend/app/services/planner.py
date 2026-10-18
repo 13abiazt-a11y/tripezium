@@ -14,7 +14,7 @@ from ..errors import ApiError
 from ..ids import new_id
 from ..models import ItineraryRow, PlaceRow, TripRow
 from ..schemas import Itinerary, ItineraryDay, ItineraryItem
-from . import budget, fx, gemini, hours, route, travel
+from . import bookings, budget, fx, gemini, hours, route, travel
 from .holidays import Holiday, apply_closure_check, get_holidays
 
 log = logging.getLogger("app.planner")
@@ -75,16 +75,35 @@ def fit_travel(trip: TripRow, plan: gemini.GItinerary, imported: dict[str, Place
         for item in day.items:
             s = _stop(item, imported)
             stops.append(travel.Stop(item.time, item.durationMins, s.lat, s.lng))
-        times, day_legs = travel.fit_day(stops)
+        times, day_legs, problem = fit_one_day(trip, dt.date.fromisoformat(day.date), stops, day_end)
         for item, t in zip(day.items, times):
             item.time = t
         legs.append(day_legs)
-        if day.items:
-            ends = travel.hm(times[-1]) + day.items[-1].durationMins
-            if ends > day_end:
-                too_long.append(f"{day.date}: with travel between stops the day runs until {travel.fmt(ends)}, "
-                                f"past {travel.fmt(day_end)}")
+        if problem:
+            too_long.append(f"{day.date}: {problem}")
     return legs, too_long
+
+
+def fit_one_day(trip: TripRow, date: dt.date, stops: list[travel.Stop], day_end: int):
+    """Travel time, the accommodation and booked journeys for one day. Returns (times, legs, problem),
+    where problem says why the day doesn't fit, or None."""
+    stay = bookings.stay_on(trip, date)
+    home = travel.Stop("", 0, stay.lat, stay.lng) if stay and _valid_coords(stay.lat, stay.lng) else None
+    busy = bookings.busy_by_date(trip).get(date, [])
+    day_start = trip.day_start.hour * 60 + trip.day_start.minute
+    times, day_legs = travel.fit_day(stops, home=home, day_start=day_start, busy=[(b.start, b.end) for b in busy])
+    if not stops:
+        return times, day_legs, None
+    ends = travel.hm(times[-1]) + stops[-1].duration
+    if ends > day_end:
+        return times, day_legs, (f"with travel between stops the day runs until {travel.fmt(ends)}, "
+                                 f"past {travel.fmt(day_end)}")
+    for t, s in zip(times, stops):
+        start = travel.hm(t)
+        for b in busy:
+            if start < b.end and start + s.duration > b.start:
+                return times, day_legs, f"a stop at {t} clashes with {b.label} ({bookings.fmt(b.start)} to {bookings.fmt(b.end)})"
+    return times, day_legs, None
 
 
 def missing_saved_places(plan: gemini.GItinerary, imported: dict[str, PlaceRow]) -> list[str]:

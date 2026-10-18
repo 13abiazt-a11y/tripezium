@@ -376,3 +376,117 @@ def test_day_that_overruns_with_travel_triggers_one_fix_pass(client, monkeypatch
     assert len(calls) == 2
     assert calls[1]["timing"] and "2026-12-01" in calls[1]["timing"][0] and "past 21:00" in calls[1]["timing"][0]
     assert [i["time"] for i in day1][-1] <= "20:00"              # the fixed plan fits the day
+
+
+# --- Checking edited days (POST /trips/{id}/itinerary/check) ----------------------------
+
+def _generated_trip(client, monkeypatch):
+    trip_id = client.post("/trips", json=TRIP_BODY).json()["id"]
+    plan = _plan_with([[("09:00", 60, "Senso-ji", *ASAKUSA)], QUIET_DAY, QUIET_DAY, QUIET_DAY])
+    monkeypatch.setattr(planner.gemini, "generate_plan", lambda *a, **k: plan.model_copy(deep=True))
+    client.post(f"/trips/{trip_id}/itinerary")
+    return trip_id
+
+
+def _edit(time, name, lat, lng, mins=60, **kw):
+    return {"time": time, "name": name, "category": "museum", "durationMins": mins, "lat": lat, "lng": lng, **kw}
+
+
+@needs_db
+def test_edited_day_is_checked_and_saved(client, monkeypatch):
+    trip_id = _generated_trip(client, monkeypatch)
+    monkeypatch.setattr(hours, "enabled", lambda: True)
+    shut = hours.Hours([(d * 1440 + 13 * 60, d * 1440 + 17 * 60) for d in range(7)], ["Monday: 13:00-17:00"] * 7)
+    monkeypatch.setattr(hours, "lookup_all", lambda stops, dest: {s: shut if s.name == "Museum" else None for s in stops})
+
+    body = {"days": [{"date": "2026-12-01", "items": [
+        _edit("09:00", "Senso-ji", *ASAKUSA, localCost={"amount": 0, "currency": "JPY"}, category="landmark"),
+        _edit("10:00", "Museum", *SHIBUYA, estimatedCost=2000),  # straight across town, and shut in the morning
+    ]}]}
+    r = client.post(f"/trips/{trip_id}/itinerary/check", json=body)
+    assert r.status_code == 200, r.text
+    out = r.json()
+    assert out["saved"] is True
+    day = out["days"][0]
+    temple, museum = day["items"]
+    assert museum["time"] > "10:00" and museum["travelMode"] == "transit"   # pushed later for the metro
+    assert museum["status"] == "closed"                                      # opens at 13:00
+    assert museum["localCost"] == {"amount": 2000.0, "currency": "JPY"}      # estimate in the day's currency
+    assert museum["cost"] == {"amount": 10.0, "currency": "GBP"}             # 2000 JPY * 0.005
+    assert day["total"] == {"amount": 10.0, "currency": "GBP"}
+    assert temple["status"] == "ok"                                          # open air, no hours: fine
+    assert any("isn't open" in p for p in day["problems"]) and any("moved to" in p for p in day["problems"])
+
+    # saved into the stored plan: the new stop is a place, the old one is reused, totals updated
+    it = client.get(f"/trips/{trip_id}/itinerary").json()
+    stops = it["days"][0]["items"]
+    assert [s["status"] for s in stops] == ["ok", "closed"]
+    names = {p["id"]: p["nameEnglish"] for p in client.get(f"/trips/{trip_id}/places").json()["places"]}
+    assert [names[s["placeId"]] for s in stops] == ["Senso-ji", "Museum"]
+    assert it["days"][0]["dayTotalHome"] == 10.0
+    assert len([n for n in names.values() if n == "Senso-ji"]) == 1
+
+
+@needs_db
+def test_edit_check_rejects_dates_outside_the_trip(client, monkeypatch):
+    trip_id = _generated_trip(client, monkeypatch)
+    r = client.post(f"/trips/{trip_id}/itinerary/check", json={"days": [{"date": "2027-01-01", "items": []}]})
+    assert r.status_code == 422 and r.json()["error"] == "date_outside_trip"
+
+
+@needs_db
+def test_demo_trip_edits_are_checked_not_saved(client):
+    before = client.get("/trips/t_demo0001/itinerary").json()
+    day = before["days"][0]["date"]
+    r = client.post("/trips/t_demo0001/itinerary/check",
+                    json={"days": [{"date": day, "items": [_edit("10:00", "Somewhere new", *SHIBUYA, estimatedCost=100)]}]})
+    assert r.status_code == 200 and r.json()["saved"] is False
+    assert client.get("/trips/t_demo0001/itinerary").json() == before
+
+
+# --- Stays and booked journeys -------------------------------------------------------------
+
+BOOKINGS = {
+    "stays": [{"name": "Hotel Gracery Shinjuku", "city": "Tokyo", "checkIn": "2026-12-01", "checkOut": "2026-12-04",
+               "lat": 35.6948, "lng": 139.7020}],
+    "transport": [
+        {"kind": "train", "origin": "Tokyo", "destination": "Hakone", "departs": "2026-12-02T10:00",
+         "arrives": "2026-12-02T11:30", "reference": "Romancecar"},
+        {"kind": "flight", "origin": "London Heathrow", "destination": "Tokyo Haneda", "departs": "2026-11-30T19:00",
+         "arrives": "2026-12-01T15:00", "reference": "BA7"},
+    ],
+}
+
+
+@needs_db
+def test_trip_keeps_bookings_and_changing_them_replans(client, monkeypatch):
+    trip_id = client.post("/trips", json={**TRIP_BODY, **BOOKINGS}).json()["id"]
+    got = client.get(f"/trips/{trip_id}").json()
+    assert got["stays"] == [{**BOOKINGS["stays"][0], "address": None}]
+    assert [t["reference"] for t in got["transport"]] == ["BA7", "Romancecar"]   # sorted by departure
+
+    plan = _plan_with([[("10:00", 60, "Senso-ji", *ASAKUSA)], [("10:30", 60, "Park", *SHIBUYA)], QUIET_DAY, QUIET_DAY])
+    prompts = []
+    real_build = planner.gemini.build_prompt
+    monkeypatch.setattr(planner.gemini, "generate_plan",
+                        lambda trip, *a, **k: prompts.append(real_build(trip, [])) or plan.model_copy(deep=True))
+    it = client.post(f"/trips/{trip_id}/itinerary").json()
+    assert "Flight BA7 London Heathrow -> Tokyo Haneda" in prompts[0] and "Staying at Hotel Gracery" in prompts[0]
+    day1, day2 = it["days"][0]["items"], it["days"][1]["items"]
+    assert day1[0]["time"] >= "16:15"                 # lands 15:00, +75 min to get out of the airport
+    assert day1[0]["travelMins"] is not None          # from the hotel
+    assert day2[0]["time"] >= "11:50"                 # the 10:00-11:30 train, +20 min
+    assert len(prompts) == 1                          # moving them still fits the day: no fix pass
+
+    r = client.patch(f"/trips/{trip_id}", json={"transport": []})
+    assert r.status_code == 200 and r.json()["transport"] == []
+    assert client.get(f"/trips/{trip_id}/itinerary").json()["error"] == "no_itinerary"   # replanned
+
+
+@needs_db
+def test_bad_bookings_rejected(client):
+    bad = {**TRIP_BODY, "transport": [{"origin": "A", "destination": "B", "departs": "2026-12-02T10:00",
+                                       "arrives": "2026-12-02T09:00"}]}
+    assert client.post("/trips", json=bad).status_code == 422
+    bad = {**TRIP_BODY, "stays": [{"name": "X", "checkIn": "2026-12-03", "checkOut": "2026-12-01"}]}
+    assert client.post("/trips", json=bad).status_code == 422

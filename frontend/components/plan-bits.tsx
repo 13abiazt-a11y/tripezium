@@ -39,16 +39,30 @@ export function StatusBadge({ status }: { status?: ItineraryItem["status"] }) {
   return null
 }
 
-/** How you get here from the previous stop; red if the plan doesn't leave enough time (e.g. after a voice edit). */
-export function TravelHint({ prev, item, className = "" }: { prev: EditableItem; item: EditableItem; className?: string }) {
+/**
+ * How you get here from the previous stop; red if the plan doesn't leave enough time (e.g. after a voice edit).
+ * With `from` (e.g. "your accommodation"), the leg into the day's first stop, never red.
+ */
+export function TravelHint({
+  prev,
+  item,
+  from,
+  className = "",
+}: {
+  prev: EditableItem
+  item: EditableItem
+  from?: string
+  className?: string
+}) {
   const leg = estimateLeg(prev, item)
   if (!leg) return null
   const gap = gapMins(prev, item)
-  const tight = gap < leg.mins
+  const tight = !from && gap < leg.mins
   const Icon = leg.mode === "walk" ? Footprints : leg.mode === "train" ? TrainFront : TramFront
   return (
     <p className={`flex items-center gap-1.5 text-xs ${tight ? "font-medium text-destructive" : "text-muted-foreground"} ${className}`}>
       <Icon className="size-3.5 shrink-0" />
+      {from ? `From ${from}: ` : ""}
       {describeLeg(leg)}
       {tight ? ` · only ${Math.max(gap, 0)} min to get here` : ""}
     </p>
