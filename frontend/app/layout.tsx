@@ -13,7 +13,7 @@ export const metadata: Metadata = {
 export const viewport: Viewport = {
   width: "device-width",
   initialScale: 1,
-  themeColor: "#f6faf7",
+  themeColor: "#e4eee8",
 }
 
 const geist = Geist({subsets:['latin'],variable:'--font-sans'})

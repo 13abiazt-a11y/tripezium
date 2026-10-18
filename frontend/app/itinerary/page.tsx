@@ -1,5 +1,6 @@
 "use client"
 
+import Link from "next/link"
 import { useCallback, useEffect, useRef, useState } from "react"
 import {
   BedDouble,
@@ -8,20 +9,20 @@ import {
   CircleCheck,
   Clock,
   Compass,
-  Footprints,
   Lightbulb,
   Loader2,
   Plane,
   RefreshCw,
   TrainFront,
-  TramFront,
   Undo2,
   Wallet,
 } from "lucide-react"
 
 import { BookingsEditor } from "@/components/bookings-editor"
 import { Badge } from "@/components/ui/badge"
-import { Button } from "@/components/ui/button"
+import { Button, buttonVariants } from "@/components/ui/button"
+import { BudgetCard } from "@/components/budget-card"
+import { Cost, formatDay, formatDuration, StatusBadge, TravelHint } from "@/components/plan-bits"
 import { ListenButton } from "@/components/ListenButton"
 import { PageShell } from "@/components/page-shell"
 import { RouteEditor } from "@/components/route-editor"
@@ -31,96 +32,24 @@ import { checkDays, DEMO_TRIP_ID, generateItinerary, getItinerary, getPlaces, ge
 import { describeJourney, journeysOn, kindLabel, stayOn } from "@/lib/bookings"
 import { countryName, flagOf } from "@/lib/destinations"
 import { SHOW_COSTS } from "@/lib/flags"
-import { describeLeg, estimateLeg, gapMins } from "@/lib/travel"
-import { cityKey, distanceKm, useCityCoords } from "@/lib/geo"
+import { cityKey, useCityCoords } from "@/lib/geo"
 import { formatMoney } from "@/lib/money"
 import { narrateDay } from "@/lib/narration"
 import { addDays, daysBetween, planDays, recommendRoute } from "@/lib/route"
 import { loadTrip, saveTrip } from "@/lib/trip-store"
-import type { Itinerary, ItineraryItem, Money, Place, RouteStop, Stay, Trip } from "@/lib/types"
+import { buildDays, citySegments, planTotals, withVoiceChanges } from "@/lib/plan-view"
+import type { Itinerary, Place, RouteStop, Stay, Trip } from "@/lib/types"
+import { useDayStops } from "@/lib/use-day-stops"
 import {
-  applyOverrides,
   loadOverrides,
   mergeChanges,
   saveOverrides,
-  type EditableDay,
   type EditableItem,
   type Overrides,
   type VoiceEditResult,
 } from "@/lib/voice-edits"
 
-function formatDay(date: string) {
-  return new Date(date + "T00:00:00").toLocaleDateString(undefined, { weekday: "short", day: "numeric", month: "short" })
-}
-
-function formatDuration(mins: number) {
-  const h = Math.floor(mins / 60)
-  const m = mins % 60
-  return [h ? `${h}h` : "", m ? `${m}m` : ""].filter(Boolean).join(" ")
-}
-
 type Phase = "loading" | "generating" | "ready" | "error"
-
-type ShownDay = {
-  date: string
-  city: string
-  country: string
-  dayInCity?: number
-  daysInCity?: number
-  explore?: boolean
-  holiday?: string | null
-  total?: Money
-  items: ItineraryItem[]
-}
-
-/** API items + their places → items with the place details inline (what voice edits and the map use). */
-function toEditable(items: ItineraryItem[], places: Map<string, Place>): EditableItem[] {
-  return items.map((i) => {
-    const p = places.get(i.placeId)
-    return {
-      time: i.time,
-      name: p?.nameEnglish ?? "Unknown place",
-      ...(p && p.name !== p.nameEnglish ? { localName: p.name } : {}),
-      category: p?.category ?? "activity",
-      durationMins: i.durationMins,
-      ...(i.note ? { note: i.note } : {}),
-      ...(p?.tip ? { tip: p.tip } : {}),
-      ...(i.cost ? { cost: i.cost } : {}),
-      ...(i.localCost ? { localCost: i.localCost } : {}),
-      ...(i.status ? { status: i.status } : {}),
-      ...(p && p.lat != null && p.lng != null && (p.lat || p.lng) ? { lat: p.lat, lng: p.lng } : {}),
-    }
-  })
-}
-
-function Cost({ item }: { item: EditableItem }) {
-  if (!item.cost) return null
-  if (item.cost.amount === 0) return <span className="font-medium text-foreground">Free</span>
-  const local = item.localCost && item.localCost.currency !== item.cost.currency ? item.localCost : null
-  return (
-    <span className="font-medium text-foreground">
-      ~{formatMoney(item.cost)}
-      {local ? <span className="font-normal text-muted-foreground"> · {formatMoney(local)}</span> : null}
-    </span>
-  )
-}
-
-/** How you get here from the previous stop; red if the plan doesn't leave enough time (e.g. after a voice edit). */
-function TravelHint({ prev, item, from }: { prev: EditableItem; item: EditableItem; from?: string }) {
-  const leg = estimateLeg(prev, item)
-  if (!leg) return null
-  const gap = gapMins(prev, item)
-  const tight = !from && gap < leg.mins
-  const Icon = leg.mode === "walk" ? Footprints : leg.mode === "train" ? TrainFront : TramFront
-  return (
-    <p className={`mb-1.5 flex items-center gap-1.5 text-xs ${tight ? "font-medium text-destructive" : "text-muted-foreground"}`}>
-      <Icon className="size-3.5 shrink-0" />
-      {from ? `From ${from}: ` : ""}
-      {describeLeg(leg)}
-      {tight ? ` · only ${Math.max(gap, 0)} min to get here` : ""}
-    </p>
-  )
-}
 
 /** The day's own bookings: where you're staying, and journeys leaving or arriving today. */
 function DayBookings({ date, trip }: { date: string; trip: Trip }) {
@@ -192,12 +121,6 @@ function CheckNote({ problems, checking }: { problems?: string[]; checking: bool
 function stayStart(stay: Stay | null, dayStart?: string): EditableItem | null {
   if (!stay || stay.lat == null || stay.lng == null) return null
   return { time: dayStart || "09:00", name: stay.name, category: "stay", durationMins: 0, lat: stay.lat, lng: stay.lng }
-}
-
-function StatusBadge({ status }: { status?: ItineraryItem["status"] }) {
-  if (status === "check_hours") return <Badge variant="outline">Check hours</Badge>
-  if (status === "closed") return <Badge variant="destructive">Closed</Badge>
-  return null
 }
 
 export default function ItineraryPage() {
@@ -284,22 +207,9 @@ export default function ItineraryPage() {
 
   const planned = trip ? planDays(trip.startDate, trip.route) : []
   const tripDays = trip ? daysBetween(trip.startDate, trip.endDate) : 0
-  const days: ShownDay[] = itinerary
-    ? itinerary.days.map((d) => {
-        const p = planned.find((x) => x.date === d.date)
-        return { ...p, ...d, city: p?.city ?? d.city ?? trip?.destination ?? "", country: p?.country ?? "" }
-      })
-    : planned.map((p) => ({ ...p, items: [] }))
-
+  const days = buildDays(trip, itinerary)
   // Voice changes (stored in this browser) on top of the plan from the API.
-  const baseDays: EditableDay[] = days.map((d, i) => ({
-    day: i + 1,
-    date: d.date,
-    city: d.city,
-    country: d.country,
-    items: toEditable(d.items, places),
-  }))
-  const { days: shown, edited } = applyOverrides(baseDays, overrides)
+  const { baseDays, shown, edited } = withVoiceChanges(days, places, overrides)
 
   const activeIndex = Math.min(active, Math.max(0, days.length - 1))
   const day = days[activeIndex]
@@ -308,35 +218,23 @@ export default function ItineraryPage() {
   const isEdited = plan ? edited.has(plan.date) : false
   const cityChanged = !!(day && plan && plan.city !== day.city)
 
-  const perPerson = itinerary?.total
-  const group = perPerson && trip ? { ...perPerson, amount: perPerson.amount * trip.travellers } : null
-  const budget = trip?.budget.amount && group && trip.budget.currency === group.currency ? trip.budget.amount : null
+  // Costs follow the plan: voice-changed days use their activities' prices.
+  const { total: perPerson, dayTotals, unpriced } = planTotals(days, shown, edited, itinerary)
+  const budget = trip?.budget.amount && perPerson && trip.budget.currency === perPerson.currency ? trip.budget.amount : null
+  // The budget isn't part of the plan, so changing it doesn't re-plan the trip.
+  const changeBudget = (amount: number | null) => {
+    if (!trip) return
+    const next = { ...trip.budget, amount }
+    setTrip({ ...trip, budget: next })
+    saveTrip({ budget: next })
+  }
 
   // ---- map ----
-  // Cities in travel order (after voice changes), with how many days in each.
-  const segments: Omit<MapCity, "at">[] = []
-  shown.forEach((d, i) => {
-    const last = segments.at(-1)
-    if (last && last.city === d.city && last.country === d.country) last.days++
-    else segments.push({ city: d.city, country: d.country, days: 1, firstDay: i, active: false })
-  })
-  segments.forEach((s, i) => {
-    const next = segments[i + 1]?.firstDay ?? shown.length
-    s.active = activeIndex >= s.firstDay && activeIndex < next
-  })
+  const segments = citySegments(shown, activeIndex)
   const coords = useCityCoords(segments.filter((s) => s.city))
   const centre = plan ? coords[cityKey(plan.city, plan.country)] : null
-  // A stop is placed if it has coordinates near its city (a location that's far
-  // away is treated as wrong and looked up again).
-  const placed = (it: EditableItem) =>
-    it.lat !== undefined && it.lng !== undefined && (!centre || distanceKm(centre, { lat: it.lat, lng: it.lng }) <= 120)
-  const unplaced = plan ? items.filter((it) => !placed(it) && it.name !== "Unknown place") : []
-  const placeCoords = useCityCoords(unplaced.map((it) => ({ city: plan!.city, country: plan!.country, place: it.name })))
   const mapCities: MapCity[] = segments.map((s) => ({ ...s, at: coords[cityKey(s.city, s.country)] }))
-  const mapStops: MapStop[] = items.flatMap((it, i) => {
-    const at = placed(it) ? { lat: it.lat!, lng: it.lng! } : placeCoords[cityKey(plan!.city, plan!.country, it.name)]
-    return at ? [{ n: i + 1, name: it.name, category: it.category, lat: at.lat, lng: at.lng }] : []
-  })
+  const mapStops: MapStop[] = useDayStops(plan, centre)
   const dayCity = plan ? { city: plan.city, at: centre } : null
 
   const selectDay = (i: number) => {
@@ -354,6 +252,7 @@ export default function ItineraryPage() {
     travellers: trip?.travellers,
     interests: trip?.interests,
     dayStart: trip?.dayStart,
+    currency: itinerary?.total.currency, // new activities get prices in this currency
     dayEnd: trip?.dayEnd,
     bookings: { stays: trip?.stays ?? [], transport: trip?.transport ?? [] },
     days: shown.map(({ day, date, city, country, items }) => ({ day, date, city, country, items })),
@@ -408,6 +307,13 @@ export default function ItineraryPage() {
             }`
           : "Loading…"
       }
+      footer={
+        phase === "ready" && days.length ? (
+          <Link href="/trip" className={buttonVariants({ size: "lg", className: "h-12 w-full text-base" })}>
+            Finalise my plan
+          </Link>
+        ) : null
+      }
     >
       {days.length ? (
         <TripMap
@@ -425,26 +331,16 @@ export default function ItineraryPage() {
         />
       ) : null}
 
-      {SHOW_COSTS && perPerson && group ? (
-        <div className="mb-4 rounded-xl bg-card p-3 text-sm ring-1 ring-foreground/10">
-          <p className="inline-flex items-center gap-1.5 font-medium">
-            <Wallet className="size-4 text-primary" /> About {formatMoney(perPerson)} per person
-            {trip && trip.travellers > 1 ? ` · ${formatMoney(group)} for ${trip.travellers}` : ""}
-          </p>
-          {budget !== null ? (
-            group.amount <= budget ? (
-              <p className="mt-1 text-muted-foreground">
-                Within your {formatMoney({ amount: budget, currency: group.currency })} budget, with about{" "}
-                {formatMoney({ amount: budget - group.amount, currency: group.currency })} to spare.
-              </p>
-            ) : (
-              <p className="mt-1 font-medium text-destructive">
-                About {formatMoney({ amount: group.amount - budget, currency: group.currency })} over your{" "}
-                {formatMoney({ amount: budget, currency: group.currency })} budget.
-              </p>
-            )
-          ) : null}
-        </div>
+      {SHOW_COSTS && perPerson && trip ? (
+        <BudgetCard
+          perPerson={perPerson}
+          travellers={trip.travellers}
+          budget={budget}
+          editable={editable && trip.budget.currency === perPerson.currency}
+          changedDays={edited.size}
+          unpriced={unpriced}
+          onChangeBudget={changeBudget}
+        />
       ) : null}
 
       {editable && trip && (trip.route.length > 1 || tripDays !== planned.length) ? (
@@ -505,7 +401,7 @@ export default function ItineraryPage() {
             aria-selected={i === activeIndex}
             onClick={() => selectDay(i)}
             className={`relative flex shrink-0 flex-col items-start rounded-2xl border px-4 py-1.5 text-left transition-colors ${
-              i === activeIndex ? "border-primary bg-primary text-primary-foreground" : "border-border hover:bg-muted"
+              i === activeIndex ? "border-primary bg-primary text-primary-foreground" : "border-border bg-card hover:bg-muted"
             }`}
           >
             <span className="text-sm font-medium">
@@ -561,9 +457,9 @@ export default function ItineraryPage() {
       {plan && trip ? <DayBookings date={plan.date} trip={trip} /> : null}
       {plan ? <CheckNote problems={checkNotes[plan.date]} checking={checking && isEdited} /> : null}
 
-      {SHOW_COSTS && day?.total && items.length && !isEdited ? (
+      {SHOW_COSTS && dayTotals[activeIndex] && items.length ? (
         <p className="mb-3 inline-flex items-center gap-1.5 text-sm font-medium">
-          <Wallet className="size-4 text-primary" /> About {formatMoney(day.total)} per person today
+          <Wallet className="size-4 text-primary" /> About {formatMoney(dayTotals[activeIndex]!)} per person today
         </p>
       ) : null}
 
@@ -593,9 +489,14 @@ export default function ItineraryPage() {
           {items.map((item, i) => (
             <li key={`${item.time}-${item.name}-${i}`} id={`stop-${i + 1}`} className="relative scroll-mt-4">
               {i > 0 ? (
-                <TravelHint prev={items[i - 1]} item={item} />
+                <TravelHint prev={items[i - 1]} item={item} className="mb-1.5" />
               ) : plan && trip && stayStart(stayOn(plan.date, trip.stays), trip.dayStart) ? (
-                <TravelHint prev={stayStart(stayOn(plan.date, trip.stays), trip.dayStart)!} item={item} from="your accommodation" />
+                <TravelHint
+                  prev={stayStart(stayOn(plan.date, trip.stays), trip.dayStart)!}
+                  item={item}
+                  from="your accommodation"
+                  className="mb-1.5"
+                />
               ) : null}
               <span
                 aria-hidden

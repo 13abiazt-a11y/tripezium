@@ -320,8 +320,8 @@ export async function checkDays(
         lat: i.lat ?? null,
         lng: i.lng ?? null,
         status: i.status ?? null,
-        localCost: i.localCost ?? null,
-        estimatedCost: i.localCost ? null : (i.estimatedCost ?? null),
+        // A new stop has only the assistant's estimate in the trip currency: the server converts it.
+        localCost: i.localCost ?? i.cost ?? null,
       })),
     })),
   }

@@ -81,19 +81,22 @@ export const ITEM_SCHEMA = {
     tip: { type: "STRING" },
     lat: { type: "NUMBER", description: "Latitude, WGS84" },
     lng: { type: "NUMBER", description: "Longitude, WGS84" },
-    estimatedCost: { type: "NUMBER", description: "Typical cost per person in the local currency, 0 if free" },
+    cost: { type: "NUMBER", description: "Estimated cost per person in the trip's currency; 0 if free" },
   },
-  required: ["time", "name", "category", "durationMins", "lat", "lng", "estimatedCost"],
+  required: ["time", "name", "category", "durationMins", "lat", "lng"],
 }
 
-export const ITEM_SHAPE = `{"time": "HH:mm", "name": string, "localName"?: string, "category": string, "durationMins": number, "note"?: string, "tip"?: string, "lat": number, "lng": number, "estimatedCost": number}`
+export const ITEM_SHAPE = `{"time": "HH:mm", "name": string, "localName"?: string, "category": string, "durationMins": number, "note"?: string, "tip"?: string, "lat": number, "lng": number, "cost"?: number}`
 
 const HHMM = /^([01]?\d|2[0-3]):([0-5]\d)$/
 
-/** Check and tidy activities from Gemini. `previous` keeps costs/coordinates of unchanged ones. */
-export function cleanItems(raw: unknown, previous: EditableItem[] = []): EditableItem[] {
+/**
+ * Check and tidy activities from Gemini. `previous` keeps costs/coordinates of
+ * unchanged ones; `currency` (the trip's) turns Gemini's cost estimates into prices.
+ */
+export function cleanItems(raw: unknown, previous: EditableItem[] = [], currency?: string): EditableItem[] {
   if (!Array.isArray(raw)) return []
-  return (raw as Partial<EditableItem>[])
+  return (raw as (Omit<Partial<EditableItem>, "cost"> & { cost?: unknown })[])
     .filter((i) => i && typeof i.name === "string" && i.name.trim() && HHMM.test(String(i.time ?? "").trim()))
     .map((i) => {
       const [h, m] = String(i.time).trim().split(":")
@@ -115,10 +118,10 @@ export function cleanItems(raw: unknown, previous: EditableItem[] = []): Editabl
       // Keep the estimated cost and location when an activity is unchanged.
       const same = previous.find((b) => b.name === item.name)
       if (same?.cost) item.cost = same.cost
+      else if (currency && Number.isFinite(Number(i.cost)) && Number(i.cost) >= 0)
+        item.cost = { amount: Math.round(Number(i.cost) * 100) / 100, currency }
       if (same?.localCost) item.localCost = same.localCost
       if (same?.status) item.status = same.status
-      const estimate = Number(i.estimatedCost)
-      if (!same?.localCost && i.estimatedCost != null && Number.isFinite(estimate) && estimate >= 0) item.estimatedCost = estimate
       if (item.lat === undefined && same?.lat !== undefined && same.lng !== undefined) {
         item.lat = same.lat
         item.lng = same.lng
