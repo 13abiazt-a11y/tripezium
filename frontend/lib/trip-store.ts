@@ -34,6 +34,16 @@ export function loadTrip(): Trip {
   }
 }
 
+/** Start a brand-new trip (the previous one stays on the server and in My trips if saved). */
+export function startNewTrip(): Trip {
+  try {
+    localStorage.setItem(KEY, JSON.stringify(emptyTrip))
+  } catch {
+    // storage blocked: the form just starts empty
+  }
+  return emptyTrip
+}
+
 export function saveTrip(patch: Partial<Trip>): Trip {
   const next = { ...loadTrip(), ...patch }
   try {

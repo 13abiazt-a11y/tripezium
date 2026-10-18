@@ -48,7 +48,7 @@
 }
 
 :root {
-    --background: #f6faf7;
+    --background: #e4eee8; /* sage page background, so white cards stand out */
     --foreground: #123d34;
     --card: #ffffff;
     --card-foreground: #123d34;
@@ -56,15 +56,15 @@
     --popover-foreground: #123d34;
     --primary: #009b72;
     --primary-foreground: #ffffff;
-    --secondary: #e0f2eb;
+    --secondary: #d5ede2;
     --secondary-foreground: #123d34;
-    --muted: #e8efeb;
+    --muted: #edf3ef;
     --muted-foreground: #637e76;
     --accent: #c6e996;
     --accent-foreground: #123d34;
     --destructive: oklch(0.577 0.245 27.325);
-    --border: #dbe5e0;
-    --input: #dbe5e0;
+    --border: #d3e0d9;
+    --input: #cddcd4;
     --ring: #009b72;
     --chart-1: oklch(0.87 0 0);
     --chart-2: oklch(0.556 0 0);

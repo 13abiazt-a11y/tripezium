@@ -1,220 +1,268 @@
 "use client"
 
-import { useEffect, useState } from "react"
+// Home: start a new holiday, carry on with the one in progress, or open a trip
+// saved to My trips.
+import Link from "next/link"
 import { useRouter } from "next/navigation"
-import { Minus, Plus } from "lucide-react"
+import { useEffect, useState } from "react"
+import { ArrowRight, ChevronDown, Plus } from "lucide-react"
 
-import { Button } from "@/components/ui/button"
-import { Input } from "@/components/ui/input"
-import { DestinationPicker } from "@/components/destination-picker"
-import { PageShell } from "@/components/page-shell"
+import { Brand } from "@/components/brand"
+import { dateRange } from "@/components/final-plan"
 import { Splash } from "@/components/splash"
-import { CURRENCIES } from "@/lib/money"
-import { daysBetween, summarise, syncRoute } from "@/lib/route"
-import { emptyTrip, loadTrip, saveTrip } from "@/lib/trip-store"
+import { countdown, PALETTE, TripStamp } from "@/components/trip-stamp"
+import { Button } from "@/components/ui/button"
+import { isServerTrip } from "@/lib/api"
+import { SHOW_COSTS } from "@/lib/flags"
+import { formatMoney } from "@/lib/money"
+import { buildDays, planTotals, withVoiceChanges } from "@/lib/plan-view"
+import { daysBetween, summarise } from "@/lib/route"
+import { listSaved, withColours, type SavedTrip } from "@/lib/saved-trips"
+import { loadTrip, startNewTrip } from "@/lib/trip-store"
 import type { Trip } from "@/lib/types"
 
-function Field({ label, htmlFor, children, error }: { label: string; htmlFor?: string; children: React.ReactNode; error?: string }) {
+/** The trip's main city (first on the route), for its stamp. */
+function cityOf(trip: Trip) {
   return (
-    <div className="flex flex-col gap-1.5">
-      <label htmlFor={htmlFor} className="text-sm font-medium">
-        {label}
-      </label>
-      {children}
-      {error ? <p className="text-xs text-destructive">{error}</p> : null}
-    </div>
+    trip.route[0]?.city ||
+    trip.stops[0]?.cities[0]?.name ||
+    trip.destination ||
+    "Trip"
   )
 }
 
-export default function TripFormPage() {
+const yearOf = (date: string) => (date ? date.slice(0, 4) : undefined)
+
+function perPersonOf(s: SavedTrip) {
+  const places = new Map(s.places.map((p) => [p.id, p]))
+  const days = buildDays(s.trip, s.itinerary)
+  const { shown, edited } = withVoiceChanges(days, places, s.overrides)
+  return {
+    total: planTotals(days, shown, edited, s.itinerary).total,
+    days: shown.length || daysBetween(s.trip.startDate, s.trip.endDate),
+  }
+}
+
+export default function HomePage() {
   const router = useRouter()
-  const [trip, setTrip] = useState<Trip>(emptyTrip)
-  const [errors, setErrors] = useState<Record<string, string>>({})
+  const [saved, setSaved] = useState<SavedTrip[]>([])
+  const [draft, setDraft] = useState<Trip | null>(null)
+  const [showPast, setShowPast] = useState(false)
 
-  useEffect(() => setTrip(loadTrip()), [])
+  useEffect(() => {
+    queueMicrotask(() => {
+      const list = withColours(listSaved())
+      setSaved(list)
+      const t = loadTrip()
+      // A trip in progress that isn't already in My trips.
+      setDraft(t.stops.length && !list.some((s) => s.id === t.id) ? t : null)
+    })
+  }, [])
 
-  const set = (patch: Partial<Trip>) => setTrip((t) => ({ ...t, ...patch }))
-  const today = new Date().toISOString().slice(0, 10)
-  const cityCount = trip.stops.reduce((n, s) => n + s.cities.length, 0)
-  const exploreCount = trip.stops.filter((s) => s.country && !s.cities.length).length
-  const placesLabel = [
-    cityCount ? `${cityCount} ${cityCount === 1 ? "city" : "cities"}` : "",
-    exploreCount ? `${exploreCount} ${exploreCount === 1 ? "country" : "countries"} to explore` : "",
-  ]
-    .filter(Boolean)
-    .join(" + ")
-  const tripDays = daysBetween(trip.startDate, trip.endDate)
+  // Soonest trip first; finished trips at the end.
+  const ordered = saved
+    .map((s) => ({ s, when: countdown(s.trip.startDate, s.trip.endDate) }))
+    .sort((a, b) => {
+      const pa = a.when?.past ? 1 : 0
+      const pb = b.when?.past ? 1 : 0
+      if (pa !== pb) return pa - pb
+      return pa
+        ? b.s.trip.startDate.localeCompare(a.s.trip.startDate)
+        : a.s.trip.startDate.localeCompare(b.s.trip.startDate)
+    })
+  const nextId = ordered.find((o) => o.when && !o.when.past)?.s.id
 
-  function submit(e: React.FormEvent) {
-    e.preventDefault()
-    const errs: Record<string, string> = {}
-    const stops = trip.stops.filter((s) => s.country) // drop empty sections
+  const upcoming = ordered.filter((o) => !o.when?.past)
+  const past = ordered.filter((o) => o.when?.past)
 
-    if (!stops.length) errs.stops = "Where are you going? Pick a country."
-    if (!trip.startDate) errs.startDate = "Pick a start date"
-    if (!trip.endDate) errs.endDate = "Pick an end date"
-    if (trip.startDate && trip.endDate && trip.endDate < trip.startDate) errs.endDate = "End date is before the start date"
-    if (trip.dayEnd <= trip.dayStart) errs.dayEnd = "Day should end after it starts"
-    if (trip.budget.amount !== null && !(trip.budget.amount > 0)) errs.budget = "Enter a budget above 0, or leave it blank"
+  const card = ({ s, when }: (typeof ordered)[number]) => {
+    const { total, days } = perPersonOf(s)
+    const isNext = s.id === nextId
+    return (
+      <li key={s.id}>
+        <Link
+          href={`/trips/${encodeURIComponent(s.id)}`}
+          className={`flex items-center gap-3 rounded-2xl bg-card p-3 ring-1 ring-foreground/10 transition-colors hover:bg-muted ${
+            when?.past ? "opacity-80" : ""
+          }`}
+        >
+          <TripStamp
+            trip={s.trip}
+            city={cityOf(s.trip)}
+            year={yearOf(s.trip.startDate)}
+            colour={s.colour}
+          />
+          <div className="min-w-0 flex-1">
+            <div className="flex items-start justify-between gap-2">
+              <p className="truncate font-medium" title={s.trip.destination || cityOf(s.trip)}>
+                {s.trip.destination || cityOf(s.trip)}
+              </p>
+              {when && !when.past ? (
+                <span
+                  className={`shrink-0 rounded-full px-2.5 py-1 text-xs font-semibold whitespace-nowrap ${
+                    isNext
+                      ? "bg-primary text-primary-foreground"
+                      : when.past
+                        ? "bg-muted text-muted-foreground"
+                        : "bg-secondary text-secondary-foreground"
+                  }`}
+                >
+                  {isNext && when.days > 0
+                    ? `Next trip · ${when.text.replace(/^S/, "s")}`
+                    : when.text}
+                </span>
+              ) : null}
+            </div>
+            <p className="text-sm text-muted-foreground">
+              {dateRange(s.trip.startDate, s.trip.endDate)}, {days}{" "}
+              {days === 1 ? "day" : "days"}
+            </p>
+            {SHOW_COSTS && total ? (
+              <p className="text-sm font-medium tabular-nums">
+                {formatMoney(total)} per person
+              </p>
+            ) : null}
+          </div>
+        </Link>
+      </li>
+    )
+  }
 
-    if (trip.datesPerCity) {
-      for (const c of stops.flatMap((s) => s.cities)) {
-        if (!c.startDate || !c.endDate) errs[c.id] = "Add dates for this city"
-        else if (c.endDate < c.startDate) errs[c.id] = "End date is before the start date"
-        else if ((trip.startDate && c.startDate < trip.startDate) || (trip.endDate && c.endDate > trip.endDate))
-          errs[c.id] = "These dates are outside your trip"
-      }
-    }
-
-    setErrors(errs)
-    if (Object.keys(errs).length) return
-
-    const next: Trip = { ...trip, stops, destination: summarise(stops) }
-    next.route = syncRoute(next, loadTrip())
-    saveTrip(next)
-    router.push("/interests")
+  const createNew = () => {
+    startNewTrip()
+    router.push("/plan")
   }
 
   return (
     <>
-    <Splash />
-    <PageShell
-      step={1}
-      title="Plan your trip"
-      subtitle="Tell us the basics. We'll build the days around you."
-      footer={
-        <Button type="submit" form="trip-form" size="lg" className="h-12 w-full text-base">
-          Continue
-        </Button>
-      }
-    >
-      <form id="trip-form" onSubmit={submit} className="flex flex-col gap-5" noValidate>
-        <div className="grid grid-cols-2 gap-3">
-          <Field label="From" htmlFor="start" error={errors.startDate}>
-            <Input
-              id="start"
-              type="date"
-              min={today}
-              className="h-11"
-              value={trip.startDate}
-              aria-invalid={!!errors.startDate}
-              onChange={(e) => {
-                const startDate = e.target.value
-                // Smart default: if no end date yet (or it's now before start), match it.
-                set({ startDate, endDate: !trip.endDate || trip.endDate < startDate ? startDate : trip.endDate })
-              }}
-            />
-          </Field>
-          <Field label="To" htmlFor="end" error={errors.endDate}>
-            <Input
-              id="end"
-              type="date"
-              min={trip.startDate || today}
-              className="h-11"
-              value={trip.endDate}
-              aria-invalid={!!errors.endDate}
-              onChange={(e) => set({ endDate: e.target.value })}
-            />
-          </Field>
-        </div>
+      <Splash />
+      <div className="mx-auto flex min-h-svh w-full max-w-md flex-col px-4 pt-4 pb-10">
+        <header className="mb-8">
+          <Brand />
+        </header>
 
-        <div className="flex flex-col gap-1.5">
-          <div className="flex items-baseline justify-between">
-            <p className="text-sm font-medium">Where are you going?</p>
-            {placesLabel ? (
-              <p className="text-xs text-muted-foreground">
-                {placesLabel}
-                {tripDays ? ` · ${tripDays} ${tripDays === 1 ? "day" : "days"}` : ""}
-              </p>
-            ) : null}
-          </div>
-          <p className="text-xs text-muted-foreground">Any order is fine. You can arrange your route later.</p>
-          <div className="mt-1.5">
-            <DestinationPicker
-              stops={trip.stops}
-              onChange={(stops) => set({ stops })}
-              datesPerCity={trip.datesPerCity}
-              tripStart={trip.startDate}
-              tripEnd={trip.endDate}
-              errors={errors}
-            />
-          </div>
-          {errors.stops ? <p className="text-xs text-destructive">{errors.stops}</p> : null}
-        </div>
-
-        <label className="flex items-start gap-3 rounded-xl p-3 ring-1 ring-foreground/10">
-          <input
-            type="checkbox"
-            className="mt-0.5 size-5 shrink-0 accent-primary"
-            checked={trip.datesPerCity}
-            onChange={(e) => set({ datesPerCity: e.target.checked })}
-          />
-          <span className="flex flex-col gap-0.5">
-            <span className="text-sm font-medium">I know my dates for each city</span>
-            <span className="text-xs text-muted-foreground">
-              Leave this off and we’ll suggest how many days to spend in each place.
-            </span>
-          </span>
-        </label>
-
-        <Field label="Budget for the whole trip" htmlFor="budget" error={errors.budget}>
-          <div className="flex gap-2">
-            <select
-              aria-label="Budget currency"
-              className="h-11 rounded-lg border border-input bg-background px-2 text-sm font-medium"
-              value={trip.budget.currency}
-              onChange={(e) => set({ budget: { ...trip.budget, currency: e.target.value } })}
-            >
-              {CURRENCIES.map((c) => (
-                <option key={c} value={c}>
-                  {c}
-                </option>
-              ))}
-            </select>
-            <Input
-              id="budget"
-              type="number"
-              inputMode="decimal"
-              min={0}
-              step="any"
-              placeholder="e.g. 1500"
-              className="h-11 flex-1"
-              value={trip.budget.amount ?? ""}
-              aria-invalid={!!errors.budget}
-              onChange={(e) =>
-                set({ budget: { ...trip.budget, amount: e.target.value === "" ? null : Number(e.target.value) } })
-              }
-            />
-          </div>
-          <p className="text-xs text-muted-foreground">
-            For everyone travelling. Pick your home currency and we’ll keep suggestions in your range.
+        <section className="mb-8">
+          <h1 className="text-3xl leading-tight font-semibold tracking-tight">
+            Where to next?
+          </h1>
+          <p className="mt-2 text-muted-foreground">
+            Plan a trip around the things you love, day by day, with the costs
+            worked out.
           </p>
-        </Field>
+          <Button
+            size="lg"
+            className="mt-5 h-14 w-full text-base shadow-[0_10px_24px_-12px_rgba(0,110,80,0.6)]"
+            onClick={createNew}
+          >
+            <Plus className="size-5" /> Create a new holiday
+          </Button>
+        </section>
 
-        <div className="grid grid-cols-2 gap-3">
-          <Field label="Start each day" htmlFor="dayStart">
-            <Input id="dayStart" type="time" className="h-11" value={trip.dayStart} onChange={(e) => set({ dayStart: e.target.value })} />
-          </Field>
-          <Field label="Finish each day" htmlFor="dayEnd" error={errors.dayEnd}>
-            <Input id="dayEnd" type="time" className="h-11" value={trip.dayEnd} aria-invalid={!!errors.dayEnd} onChange={(e) => set({ dayEnd: e.target.value })} />
-          </Field>
-        </div>
+        {draft ? (
+          <section className="mb-8">
+            <h2 className="mb-3 text-sm font-medium text-muted-foreground">
+              Still planning
+            </h2>
+            <Link
+              href={isServerTrip(draft.id) ? "/itinerary" : "/plan"}
+              className="flex items-center gap-3 rounded-2xl bg-card p-3 ring-1 ring-foreground/10 transition-colors hover:bg-muted"
+            >
+              <TripStamp
+                trip={draft}
+                city={cityOf(draft)}
+                year={yearOf(draft.startDate)}
+                colour={PALETTE.find((c) => !saved.some((s) => s.colour === c))}
+              />
+              <div className="min-w-0 flex-1">
+                <p
+                  className="truncate font-medium"
+                  title={draft.destination || summarise(draft.stops) || "Your trip"}
+                >
+                  {draft.destination || summarise(draft.stops) || "Your trip"}
+                </p>
+                <p className="text-sm text-muted-foreground">
+                  {draft.startDate && draft.endDate
+                    ? `${dateRange(draft.startDate, draft.endDate)}, ${daysBetween(draft.startDate, draft.endDate)} days`
+                    : "No dates yet"}
+                </p>
+              </div>
+              <span className="inline-flex items-center gap-1 text-sm font-medium text-primary">
+                Continue <ArrowRight className="size-4" />
+              </span>
+            </Link>
+          </section>
+        ) : null}
 
-        <Field label="Travellers">
-          <div className="flex items-center gap-4">
-            <Button type="button" variant="outline" size="icon-lg" aria-label="Fewer travellers" disabled={trip.travellers <= 1} onClick={() => set({ travellers: trip.travellers - 1 })}>
-              <Minus />
-            </Button>
-            <span className="w-6 text-center text-lg font-medium tabular-nums" aria-live="polite">
-              {trip.travellers}
+        <section aria-labelledby="upcoming-heading">
+          <h2 id="upcoming-heading" className="mb-3 text-lg font-semibold">
+            Upcoming
+            {upcoming.length ? (
+              <span className="ml-1.5 font-normal text-muted-foreground">
+                {upcoming.length}
+              </span>
+            ) : null}
+          </h2>
+          {upcoming.length ? (
+            <ul className="flex flex-col gap-3">{upcoming.map(card)}</ul>
+          ) : (
+            <div className="rounded-2xl border border-dashed border-foreground/15 p-6 text-center text-sm text-muted-foreground">
+              {saved.length ? (
+                <>
+                  No upcoming trips yet. Tap{" "}
+                  <span className="font-medium text-foreground">
+                    Create a new holiday
+                  </span>{" "}
+                  to plan your next one.
+                </>
+              ) : (
+                <>
+                  Finished plans show up here. When your plan is ready, tap{" "}
+                  <span className="font-medium text-foreground">
+                    Save to my trips
+                  </span>{" "}
+                  on the final page.
+                </>
+              )}
+            </div>
+          )}
+        </section>
+
+        <section className="mt-8" aria-labelledby="past-heading">
+          <button
+            id="past-heading"
+            onClick={() => setShowPast((v) => !v)}
+            aria-expanded={showPast}
+            aria-controls="past-trips"
+            className="mb-3 flex w-full items-center justify-between rounded-lg text-left text-lg font-semibold"
+          >
+            <span>
+              Past trips{" "}
+              {past.length ? (
+                <span className="ml-1 font-normal text-muted-foreground">
+                  {past.length}
+                </span>
+              ) : null}
             </span>
-            <Button type="button" variant="outline" size="icon-lg" aria-label="More travellers" disabled={trip.travellers >= 20} onClick={() => set({ travellers: trip.travellers + 1 })}>
-              <Plus />
-            </Button>
-          </div>
-        </Field>
-      </form>
-    </PageShell>
+            <ChevronDown
+              className={`size-5 text-muted-foreground transition-transform ${showPast ? "rotate-180" : ""}`}
+            />
+          </button>
+          {showPast ? (
+            past.length ? (
+              <ul id="past-trips" className="flex flex-col gap-3">
+                {past.map(card)}
+              </ul>
+            ) : (
+              <p
+                id="past-trips"
+                className="rounded-2xl border border-dashed border-foreground/15 p-5 text-center text-sm text-muted-foreground"
+              >
+                No past trips yet. Trips move here once they’re over.
+              </p>
+            )
+          ) : null}
+        </section>
+      </div>
     </>
   )
 }

@@ -88,7 +88,7 @@ function CountrySection({
 }) {
   if (!stop.country) {
     return (
-      <div className="rounded-xl p-3 ring-1 ring-foreground/10">
+      <div className="rounded-xl bg-card p-3 ring-1 ring-foreground/10">
         <CountrySearch exclude={exclude} onPick={(country) => onChange({ country, cities: [] })} onCancel={onRemove} />
         {errors[stop.id] ? <p className="mt-2 text-xs text-destructive">{errors[stop.id]}</p> : null}
       </div>
@@ -109,7 +109,7 @@ function CountrySection({
     onChange({ cities: stop.cities.map((c) => (c.id === id ? { ...c, ...patch } : c)) })
 
   return (
-    <div className="rounded-xl p-3 ring-1 ring-foreground/10">
+    <div className="rounded-xl bg-card p-3 ring-1 ring-foreground/10">
       <div className="mb-3 flex items-center gap-2">
         <span className="text-2xl leading-none" aria-hidden>
           {flagOf(stop.country)}
@@ -132,7 +132,7 @@ function CountrySection({
               aria-pressed={on}
               onClick={() => toggle(name)}
               className={`inline-flex h-9 items-center gap-1 rounded-full border px-3 text-sm font-medium transition-colors active:scale-[0.98] ${
-                on ? "border-primary bg-primary text-primary-foreground" : "border-border bg-background hover:bg-muted"
+                on ? "border-primary bg-primary text-primary-foreground" : "border-border bg-card hover:bg-muted"
               }`}
             >
               {name}
