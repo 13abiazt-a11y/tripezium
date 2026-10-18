@@ -21,6 +21,7 @@ from ..config import get_settings
 from ..errors import ApiError
 from ..models import PlaceRow, TripRow
 from . import route
+from . import bookings
 from .holidays import Holiday
 
 log = logging.getLogger("app.gemini")
@@ -125,7 +126,7 @@ TRIP
 
 PUBLIC HOLIDAYS DURING THE TRIP
 {holiday_lines}
-
+{bookings.prompt_lines(trip)}
 OPENING HOURS AND CLOSURES (important)
 - Only schedule a place on a day and at a time when it is normally open. Check the weekday of each date.
 - Respect weekly closing days (for example, many museums close on Mondays; some markets close on Sundays or midweek).

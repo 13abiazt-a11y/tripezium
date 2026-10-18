@@ -8,10 +8,10 @@ from sqlalchemy.orm import Session
 from ..db import get_db
 from ..errors import ApiError
 from ..models import ItineraryRow
-from ..ratelimit import generate_limit
-from ..schemas import Itinerary
-from ..services import planner
-from .trips import get_trip_or_404
+from ..ratelimit import generate_limit, write_limit
+from ..schemas import Itinerary, PlanCheckIn, PlanCheckOut
+from ..services import edits, planner
+from .trips import READ_ONLY_TRIPS, get_trip_or_404
 
 router = APIRouter(prefix="/trips/{trip_id}/itinerary", tags=["itinerary"])
 
@@ -38,6 +38,17 @@ def generate_itinerary(trip_id: str, db: Session = Depends(get_db)) -> Itinerary
         if row is not None and row.updated_at >= asked_at:
             return Itinerary.model_validate(row.data)  # made while we waited: reuse it
         return planner.build_itinerary(db, trip)
+
+
+@router.post("/check", response_model=PlanCheckOut, dependencies=[Depends(write_limit)])
+def check_edited_days(trip_id: str, body: PlanCheckIn, db: Session = Depends(get_db)) -> PlanCheckOut:
+    """Days the user changed on the itinerary page: check travel time, opening hours, holidays and
+    costs, and save them into the stored plan. The demo trip is checked but not saved (saved=false)."""
+    trip = get_trip_or_404(db, trip_id)
+    with _lock_for(trip_id):  # don't interleave with a generation of the same trip
+        days = edits.check_days(db, trip, body.days)
+        saved = trip.id not in READ_ONLY_TRIPS and edits.save_days(db, trip, days)
+    return PlanCheckOut(saved=saved, days=days)
 
 
 @router.get("", response_model=Itinerary)

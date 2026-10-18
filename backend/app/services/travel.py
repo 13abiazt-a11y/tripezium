@@ -17,6 +17,7 @@ TRAIN_FROM_KM = 40        # day trips (e.g. Tokyo -> Hakone)
 TRAIN_OVERHEAD = 20
 TRAIN_KMH = 80
 STEP = 5                  # times are planned in 5-minute steps
+LAST_START = 23 * 60 + 55
 
 
 @dataclass(frozen=True)
@@ -70,15 +71,22 @@ def estimate(a: Stop, b: Stop) -> Leg | None:
     return Leg("train", _round_up(TRAIN_OVERHEAD + km / TRAIN_KMH * 60), round(km, 1))
 
 
-def fit_day(stops: list[Stop]) -> tuple[list[str], list[Leg | None]]:
+def fit_day(
+    stops: list[Stop], home: Stop | None = None, day_start: int | None = None,
+    busy: list[tuple[int, int]] = (),
+) -> tuple[list[str], list[Leg | None]]:
     """Push stops later where there isn't time to get there. Never moves anything earlier.
 
-    Returns the new start times and the leg into each stop (None for the first stop of the day,
-    or when coordinates are missing: then that gap is left as planned).
+    `home` is where the day starts (the accommodation): the first stop then has a leg from it, and
+    starts no earlier than `day_start` plus that leg. `busy` are (start, end) stretches the traveller
+    is taken up (a booked train or flight): a stop overlapping one moves to after it.
+
+    Returns the new start times and the leg into each stop (None for the first stop of the day
+    without a home, or when coordinates are missing: then that gap is left as planned).
     """
     times, legs = [], []
-    prev_end = None
-    prev = None
+    prev_end = day_start if home is not None else None
+    prev = home
     for s in stops:
         start = hm(s.time)
         leg = estimate(prev, s) if prev is not None else None
@@ -86,6 +94,10 @@ def fit_day(stops: list[Stop]) -> tuple[list[str], list[Leg | None]]:
             earliest = prev_end + (leg.mins if leg else 0)
             if start < earliest:
                 start = math.ceil(earliest / STEP) * STEP
+        for b_start, b_end in sorted(busy):
+            if start < b_end and start + s.duration > b_start:
+                start = max(start, math.ceil(b_end / STEP) * STEP)
+        start = min(start, LAST_START)  # still a valid time; the day then shows as running late
         times.append(fmt(start))
         legs.append(leg)
         prev_end, prev = start + s.duration, s
