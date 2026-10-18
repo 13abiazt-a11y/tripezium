@@ -89,7 +89,7 @@ Wise's product pillars are transparency, convenience, price, speed and coverage.
 
 | Layer | Choice |
 |---|---|
-| Frontend | _[e.g. React + Vite]_ |
+| Frontend | Next.js 16 (App Router) + React 19, TypeScript, Tailwind CSS v4, shadcn/ui (Base UI) + Lucide icons |
 | Backend | Python, FastAPI + Uvicorn, Pydantic, SQLAlchemy + psycopg ([details](backend/README.md)) |
 | Database | Tiger Data (PostgreSQL + time-series) |
 | AI | Google Gemini API (structured JSON output, multimodal) |
