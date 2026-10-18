@@ -4,6 +4,7 @@ import { useEffect, useState } from "react"
 import { useRouter } from "next/navigation"
 import { Minus, Plus } from "lucide-react"
 
+import { BookingsEditor } from "@/components/bookings-editor"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { DestinationPicker } from "@/components/destination-picker"
@@ -213,6 +214,17 @@ export default function TripFormPage() {
           </div>
         </Field>
       </form>
+
+      {/* Outside the form above: the bookings editor has its own small forms. */}
+      <div className="mt-5">
+        <BookingsEditor
+          stays={trip.stays ?? []}
+          transport={trip.transport ?? []}
+          startDate={trip.startDate}
+          endDate={trip.endDate}
+          onChange={(patch) => set(patch)}
+        />
+      </div>
     </PageShell>
     </>
   )
