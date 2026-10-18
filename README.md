@@ -173,7 +173,19 @@ python -m pytest -q                # tests
 
 ### Front end
 
-_[Add install and run commands for the front end.]_
+Node.js 20+. The live site is at [https://tripezium.club](https://tripezium.club).
+
+```bash
+cd frontend
+npm install
+# create .env.local with:
+#   GEMINI_API_KEY=...          # used by the /api/plan-day route
+#   ELEVENLABS_API_KEY=...      # used by the /api/voice-edit route and the Listen button
+#   NEXT_PUBLIC_API_URL=http://localhost:8000   # optional; points at the live API if not set
+npm run dev                     # http://localhost:3000
+npm run build && npm start      # production build
+npm run lint && npm run typecheck
+```
 
 ---
 
@@ -233,7 +245,18 @@ Back end:
 - [pytest](https://docs.pytest.org/)
 
 Front end:
-- _[Add every framework/library used]_
+- [Next.js](https://nextjs.org) (App Router + API routes) and [React](https://react.dev)
+- [TypeScript](https://www.typescriptlang.org)
+- [Tailwind CSS](https://tailwindcss.com) and [tw-animate-css](https://github.com/Wombosvideo/tw-animate-css)
+- [shadcn/ui](https://ui.shadcn.com) on [Base UI](https://base-ui.com), with [class-variance-authority](https://cva.style)
+- [Lucide](https://lucide.dev) icons
+- [Leaflet](https://leafletjs.com) with [OpenStreetMap](https://www.openstreetmap.org) tiles
+- [React DayPicker](https://daypicker.dev) and [date-fns](https://date-fns.org) (date selection)
+- [next-themes](https://github.com/pacocoursey/next-themes) (light/dark mode)
+- [Google Gemini API](https://ai.google.dev) (day planning and voice edits, via Next.js API routes)
+- [ElevenLabs](https://elevenlabs.io) (speech-to-text and text-to-speech)
+- [Nominatim](https://nominatim.org) (geocoding)
+- [ESLint](https://eslint.org) and [Prettier](https://prettier.io)
 
 ## Team
 
