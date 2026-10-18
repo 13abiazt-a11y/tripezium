@@ -15,7 +15,7 @@ import type { Trip } from "@/lib/types"
 
 function Field({ label, htmlFor, children, error }: { label: string; htmlFor?: string; children: React.ReactNode; error?: string }) {
   return (
-    <div className="flex flex-col gap-1.5">
+    <div className="flex min-w-0 flex-col gap-1.5">
       <label htmlFor={htmlFor} className="text-sm font-medium">
         {label}
       </label>
