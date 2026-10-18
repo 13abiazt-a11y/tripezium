@@ -126,6 +126,21 @@
   html {
     @apply font-sans;
     }
+  /* iPhone Safari gives date/time inputs a fixed minimum width, so two side by side
+     overflow and overlap on narrow screens. Let them shrink to their grid cell. */
+  input[type="date"],
+  input[type="time"] {
+    -webkit-appearance: none;
+    appearance: none;
+    display: block;
+    min-width: 0;
+    max-width: 100%;
+  }
+  input[type="date"]::-webkit-date-and-time-value,
+  input[type="time"]::-webkit-date-and-time-value {
+    text-align: left;
+    min-height: 1.5em;
+  }
 }
 
 /* Splash screen (components/splash.tsx) */
