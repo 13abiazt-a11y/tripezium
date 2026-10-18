@@ -78,7 +78,7 @@ export function RouteEditor({
   }
 
   return (
-    <section className="mb-5 rounded-xl p-3 ring-1 ring-foreground/10" aria-label="Your route">
+    <section className="mb-5 rounded-xl bg-card p-3 ring-1 ring-foreground/10" aria-label="Your route">
       <div className="mb-1 flex items-center justify-between gap-2">
         <h2 className="font-medium">Your route</h2>
         <Button type="button" variant="ghost" size="sm" onClick={onReset}>
