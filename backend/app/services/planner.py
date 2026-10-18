@@ -14,7 +14,7 @@ from ..errors import ApiError
 from ..ids import new_id
 from ..models import ItineraryRow, PlaceRow, TripRow
 from ..schemas import Itinerary, ItineraryDay, ItineraryItem
-from . import budget, fx, gemini, hours, route
+from . import budget, fx, gemini, hours, route, travel
 from .holidays import Holiday, apply_closure_check, get_holidays
 
 log = logging.getLogger("app.planner")
@@ -56,6 +56,35 @@ def trip_holidays(db: Session, trip: TripRow) -> list[Holiday]:
             if h.date in dates:
                 out.append(Holiday(h.date, f"{h.name} ({country})" if several else h.name))
     return sorted(out, key=lambda h: h.date)
+
+
+# Travel leg into each item (None for the first stop of a day, or without coordinates).
+Legs = list[list[travel.Leg | None]]
+
+
+def fit_travel(trip: TripRow, plan: gemini.GItinerary, imported: dict[str, PlaceRow]) -> tuple[Legs, list[str]]:
+    """Push stops later where there isn't time to travel between them (changes item times in place).
+
+    Returns the legs, plus a line per day that now runs past the trip's day end, for the fix pass.
+    """
+    day_end = trip.day_end.hour * 60 + trip.day_end.minute
+    legs: Legs = []
+    too_long: list[str] = []
+    for day in plan.days:
+        stops = []
+        for item in day.items:
+            s = _stop(item, imported)
+            stops.append(travel.Stop(item.time, item.durationMins, s.lat, s.lng))
+        times, day_legs = travel.fit_day(stops)
+        for item, t in zip(day.items, times):
+            item.time = t
+        legs.append(day_legs)
+        if day.items:
+            ends = travel.hm(times[-1]) + day.items[-1].durationMins
+            if ends > day_end:
+                too_long.append(f"{day.date}: with travel between stops the day runs until {travel.fmt(ends)}, "
+                                f"past {travel.fmt(day_end)}")
+    return legs, too_long
 
 
 def missing_saved_places(plan: gemini.GItinerary, imported: dict[str, PlaceRow]) -> list[str]:
@@ -120,7 +149,8 @@ def final_status(gemini_status: str, verdict: str | None, category: str | None =
 
 
 def _to_itinerary(
-    db: Session, trip: TripRow, plan: gemini.GItinerary, verdicts: Verdicts, imported: dict[str, PlaceRow]
+    db: Session, trip: TripRow, plan: gemini.GItinerary, verdicts: Verdicts, imported: dict[str, PlaceRow],
+    legs: Legs | None = None,
 ) -> tuple[Itinerary, dict]:
     """Contract shape. Stops Gemini invented become places (origin='ai'), replacing earlier AI suggestions."""
     db.execute(delete(PlaceRow).where(PlaceRow.trip_id == trip.id, PlaceRow.origin == "ai"))
@@ -128,9 +158,10 @@ def _to_itinerary(
     city_by_date = _city_by_date(trip)
 
     days = []
-    for gday, day_verdicts in zip(plan.days, verdicts):
+    for d, (gday, day_verdicts) in enumerate(zip(plan.days, verdicts)):
         items = []
-        for g, verdict in zip(gday.items, day_verdicts):
+        for j, (g, verdict) in enumerate(zip(gday.items, day_verdicts)):
+            leg = legs[d][j] if legs else None
             place_id = g.placeId
             category = imported[place_id].category if place_id in imported else None
             if place_id in imported:
@@ -153,6 +184,9 @@ def _to_itinerary(
                 estimated_cost=g.estimatedCost, currency=g.currency,
                 cost_home=0.0,  # filled in by budget.apply_budget
                 status=final_status(g.status, verdict, category),
+                travel_mins=leg.mins if leg else None,
+                travel_mode=leg.mode if leg else None,
+                travel_km=leg.km if leg else None,
             ))
         days.append(ItineraryDay(date=gday.date, city=city_by_date.get(gday.date), holiday=None, items=items,
                                  day_total_home=0.0))
@@ -210,6 +244,7 @@ def _build_itinerary(db: Session, trip: TripRow) -> Itinerary:
     holidays = trip_holidays(db, trip)
 
     plan = _sort(gemini.generate_plan(trip, imported_rows, holidays))
+    legs, too_long = fit_travel(trip, plan, imported)  # before the hours check: it must see the real times
     verdicts, closed = check_hours(trip, plan, imported)
     missing = missing_saved_places(plan, imported)
     log.info("trip=%s saved places used: %d/%d", trip.id, len(imported) - len(missing), len(imported))
@@ -218,21 +253,25 @@ def _build_itinerary(db: Session, trip: TripRow) -> Itinerary:
     if len(imported) > 3 * len(plan.days):
         missing = []
 
+    problems = closed or missing or too_long
     elapsed = time.perf_counter() - started
-    if (closed or missing) and elapsed > FIX_PASS_BUDGET_S:
-        log.warning("trip=%s skipping fix pass: first plan took %.0fs (budget %.0fs); %d closed, %d missing",
-                    trip.id, elapsed, FIX_PASS_BUDGET_S, len(closed), len(missing))
-    elif closed or missing:  # one fix pass; if it fails, keep the first plan and show those items as they are
-        log.info("trip=%s fix pass: %d closed, %d missing: %s", trip.id, len(closed), len(missing), (closed + missing)[:3])
+    if problems and elapsed > FIX_PASS_BUDGET_S:
+        log.warning("trip=%s skipping fix pass: first plan took %.0fs (budget %.0fs); %d closed, %d missing, %d too long",
+                    trip.id, elapsed, FIX_PASS_BUDGET_S, len(closed), len(missing), len(too_long))
+    elif problems:  # one fix pass; if it fails, keep the first plan and show those items as they are
+        log.info("trip=%s fix pass: %d closed, %d missing, %d too long: %s", trip.id, len(closed), len(missing),
+                 len(too_long), (closed + missing + too_long)[:3])
         try:
-            plan = _sort(gemini.generate_plan(trip, imported_rows, holidays, previous=plan, closed=closed, missing=missing))
+            plan = _sort(gemini.generate_plan(trip, imported_rows, holidays, previous=plan, closed=closed,
+                                              missing=missing, timing=too_long))
+            legs, too_long = fit_travel(trip, plan, imported)
             verdicts, closed = check_hours(trip, plan, imported)
-            log.info("trip=%s after fix: %d closed, %d saved places still missing",
-                     trip.id, len(closed), len(missing_saved_places(plan, imported)))
+            log.info("trip=%s after fix: %d closed, %d saved places still missing, %d days too long",
+                     trip.id, len(closed), len(missing_saved_places(plan, imported)), len(too_long))
         except ApiError as e:
             log.warning("trip=%s fix pass failed (%s); keeping first plan", trip.id, e.code)
 
-    itinerary, ai_categories = _to_itinerary(db, trip, plan, verdicts, imported)
+    itinerary, ai_categories = _to_itinerary(db, trip, plan, verdicts, imported, legs)
     categories = {pid: p.category for pid, p in imported.items()} | ai_categories
     apply_closure_check(itinerary, holidays, categories)
     apply_costs(db, itinerary)

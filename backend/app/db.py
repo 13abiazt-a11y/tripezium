@@ -44,8 +44,13 @@ def get_engine() -> Engine:
         pool_pre_ping=True,  # drop dead connections (cloud DBs close idle ones)
         pool_size=5,
         max_overflow=5,
-        # 5s to connect; any single query is cancelled after 15s so a stuck query can't hang a request.
-        connect_args={"connect_timeout": 5, "options": "-c statement_timeout=15000"},
+        # 5s to connect; any single query is cancelled after 15s so a stuck query can't hang a request;
+        # a transaction left open and idle for 3 min is closed by the server, so this code can never
+        # sit on a table lock (3 min is well above the ~100s a Gemini generation can hold one).
+        connect_args={
+            "connect_timeout": 5,
+            "options": "-c statement_timeout=15000 -c idle_in_transaction_session_timeout=180000",
+        },
     )
 
 

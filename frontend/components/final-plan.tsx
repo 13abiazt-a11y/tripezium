@@ -7,7 +7,7 @@ import { useEffect, useRef, useState } from "react"
 import { CalendarHeart, Clock, Lightbulb } from "lucide-react"
 
 import { ListenButton } from "@/components/ListenButton"
-import { Cost, formatDay, formatDuration, StatusBadge } from "@/components/plan-bits"
+import { Cost, formatDay, formatDuration, StatusBadge, TravelHint } from "@/components/plan-bits"
 import { categoryColour, TripMap, type MapCity, type MapMode } from "@/components/trip-map"
 import { flagOf } from "@/lib/destinations"
 import { SHOW_COSTS } from "@/lib/flags"
@@ -222,6 +222,9 @@ export function FinalPlan({
                           n ? "border-t border-border" : ""
                         } ${isSel ? "bg-secondary/70" : ""}`}
                       >
+                        {n > 0 ? (
+                          <TravelHint prev={d.items[n - 1]} item={item} className="col-start-2 -mt-0.5 mb-1.5" />
+                        ) : null}
                         <div className="pt-0.5 text-sm font-semibold tabular-nums">{item.time}</div>
                         <div className="flex min-w-0 items-start gap-2">
                           <span

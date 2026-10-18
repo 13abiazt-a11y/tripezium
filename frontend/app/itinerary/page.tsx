@@ -7,7 +7,7 @@ import { CalendarHeart, Clock, Compass, Lightbulb, Loader2, RefreshCw, Undo2, Wa
 import { Badge } from "@/components/ui/badge"
 import { Button, buttonVariants } from "@/components/ui/button"
 import { BudgetCard } from "@/components/budget-card"
-import { Cost, formatDay, formatDuration, StatusBadge } from "@/components/plan-bits"
+import { Cost, formatDay, formatDuration, StatusBadge, TravelHint } from "@/components/plan-bits"
 import { ListenButton } from "@/components/ListenButton"
 import { PageShell } from "@/components/page-shell"
 import { RouteEditor } from "@/components/route-editor"
@@ -353,6 +353,7 @@ export default function ItineraryPage() {
         <ol className="relative flex flex-col gap-3 border-l border-border pl-5">
           {items.map((item, i) => (
             <li key={`${item.time}-${item.name}-${i}`} id={`stop-${i + 1}`} className="relative scroll-mt-4">
+              {i > 0 ? <TravelHint prev={items[i - 1]} item={item} className="mb-1.5" /> : null}
               <span
                 aria-hidden
                 style={{ background: categoryColour(item.category) }}

@@ -139,7 +139,7 @@ RULES
 2. The user's SAVED PLACES (below) are what they actually want to do. Prioritise them: include as many as reasonably fit, on sensible days. Reference a saved place with its "id" as "placeId" and set "newPlace" to null. If that saved place has "lat"/"lng" null, put its approximate coordinates in "placeLat"/"placeLng"; otherwise set both to null.
 3. For any other stop, set "placeId" to null and fill "newPlace" with a real, specific place: "name" in the local language, "nameEnglish", "category" (one of: {", ".join(CATEGORIES)}), and approximate "lat"/"lng". Set "placeLat"/"placeLng" to null.
 4. Every item has exactly one of "placeId" or "newPlace"; never both, never neither.
-5. "time" is the start time, 24-hour HH:MM. Every item must start and finish within {day_start} to {day_end}. Leave realistic travel time between stops and group nearby places on the same day. Include meals.
+5. "time" is the start time, 24-hour HH:MM. Every item must start and finish within {day_start} to {day_end}. Leave realistic travel time between stops and group nearby places on the same day. Include meals. Travel time is checked from the coordinates afterwards (walking about 4.5 km/h for short hops; otherwise public transport with about 10 minutes to reach the station and wait), and later stops are pushed back if there isn't enough time, so a plan that ignores travel will overrun the day.
 6. "estimatedCost" is the typical cost PER PERSON in {currency}, as a plain number (entry fee, or a typical meal for one). Free places are 0. "currency" is the ISO 4217 code of that cost, e.g. "{trip.local_currency or 'JPY'}". Do not convert currencies.
 7. "status": "ok" if you are confident it is open at that time on that date; "check_hours" if you are not confident about its opening hours that day; "closed" only if you know it is closed (avoid scheduling closed places).
 8. "note": one short, practical sentence for the traveller.
@@ -259,8 +259,12 @@ def _call(prompt: str) -> str:
             raise
 
 
-def fix_prompt(previous: GItinerary, closed: list[str], missing: list[str]) -> str:
+def fix_prompt(previous: GItinerary, closed: list[str], missing: list[str], timing: list[str] = ()) -> str:
     out = "\n\nCURRENT ITINERARY (JSON):\n" + previous.model_dump_json() + "\n\nREVISE IT:"
+    if timing:
+        out += ("\n\nThese days DON'T FIT once realistic travel time between stops is added:\n- "
+                + "\n- ".join(timing)
+                + "\nDrop or shorten a stop on those days, or swap in places closer together.")
     if closed:
         out += ("\n\nThese stops are CLOSED at their scheduled time, according to their opening hours:\n- "
                 + "\n- ".join(closed)
@@ -279,10 +283,12 @@ def generate_plan(
     previous: GItinerary | None = None,
     closed: list[str] | None = None,
     missing: list[str] | None = None,
+    timing: list[str] | None = None,
 ) -> GItinerary:
     """Call Gemini; on an invalid response retry once with the problems appended. 502 if still bad.
 
-    With `previous`, asks Gemini to revise it: move/replace `closed` stops and add `missing` saved places.
+    With `previous`, asks Gemini to revise it: move/replace `closed` stops, add `missing` saved places,
+    and thin out days that don't fit once travel time is added (`timing`).
     """
     s = get_settings()
     if not (s.gemini_api_key and s.gemini_model):
@@ -290,8 +296,8 @@ def generate_plan(
 
     place_ids = {p.id for p in places}
     prompt = build_prompt(trip, places, holidays)
-    if previous is not None and (closed or missing):
-        prompt += fix_prompt(previous, closed or [], missing or [])
+    if previous is not None and (closed or missing or timing):
+        prompt += fix_prompt(previous, closed or [], missing or [], timing or [])
     feedback: list[str] = []  # problems with the model's last answer, sent back on the retry
 
     for attempt in (1, 2):
