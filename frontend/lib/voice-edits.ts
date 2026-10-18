@@ -15,6 +15,7 @@ export type EditableItem = {
   tip?: string
   cost?: Money // per person, home currency
   localCost?: Money // the same in the local currency
+  estimatedCost?: number // a new stop's price per person in the local currency, from the assistant (until checked)
   status?: ItemStatus // opening-hours check from the API
   lat?: number // where it is, when known (for the map)
   lng?: number

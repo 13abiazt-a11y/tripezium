@@ -25,6 +25,29 @@ export type RouteStop = {
   explore?: boolean // whole country, no city picked: we suggest its most popular cities
 }
 
+// Where the traveller is staying. The API finds the coordinates from the name/address.
+export type Stay = {
+  name: string
+  address?: string | null
+  city?: string | null
+  checkIn: string // YYYY-MM-DD
+  checkOut: string // YYYY-MM-DD
+  lat?: number | null
+  lng?: number | null
+}
+
+export type JourneyKind = "flight" | "train" | "bus" | "ferry" | "car" | "other"
+
+// A journey the traveller has booked: the way in, the way home, or between cities. Local times.
+export type Journey = {
+  kind: JourneyKind
+  origin: string
+  destination: string
+  departs: string // YYYY-MM-DDTHH:mm
+  arrives?: string | null // YYYY-MM-DDTHH:mm
+  reference?: string | null // "BA7", "Nozomi 21"
+}
+
 export type Money = {
   amount: number
   currency: string // ISO 4217, e.g. "GBP"
@@ -43,6 +66,8 @@ export type Trip = {
   travellers: number
   interests: string[]
   budget: { amount: number | null; currency: string } // whole trip, all travellers; amount null = not set
+  stays?: Stay[] // where they're staying (optional)
+  transport?: Journey[] // flights, trains... they've booked (optional), sorted by departure
   synced?: string // what we last sent to the API (lib/api.ts syncTrip); differs => the server needs an update
 }
 
