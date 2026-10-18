@@ -70,7 +70,19 @@ const SCALLOP = Array.from({ length: 36 }, (_, i) => {
   return `${(38 + r * Math.cos(a)).toFixed(2)},${(38 + r * Math.sin(a)).toFixed(2)}`
 }).join(" ")
 
-export function TripStamp({ trip, city, year, colour: given }: { trip: Trip; city: string; year?: string; colour?: string }) {
+export function TripStamp({
+  trip,
+  city,
+  year,
+  colour: given,
+  className = "size-[72px]",
+}: {
+  trip: Trip
+  city: string
+  year?: string
+  colour?: string
+  className?: string
+}) {
   const ink = `ink-${useId().replace(/[^a-zA-Z0-9-]/g, "")}`
   const colour = given ?? tripColour(trip.id)
   const name = city.toUpperCase()
@@ -79,7 +91,7 @@ export function TripStamp({ trip, city, year, colour: given }: { trip: Trip; cit
   // Squeeze anything still too wide to fit inside the ribbon.
   const fit = name.length * size * 0.72 > 52 ? { textLength: 52, lengthAdjust: "spacingAndGlyphs" as const } : {}
   return (
-    <svg viewBox="0 0 76 76" className="size-[72px] shrink-0" aria-hidden>
+    <svg viewBox="0 0 76 76" className={`${className} shrink-0`} aria-hidden>
       <defs>
         {/* A light printed-ink texture */}
         <filter id={ink} x="-10%" y="-10%" width="120%" height="120%">
