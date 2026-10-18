@@ -169,7 +169,7 @@ export default function ImportPage() {
       <PageShell step={3} back="/interests" title="Add video ideas">
         <div className="rounded-xl border border-dashed p-6 text-center text-sm text-muted-foreground">
           Start by telling us where you’re going.{" "}
-          <Link href="/" className="font-medium text-primary underline-offset-4 hover:underline">
+          <Link href="/plan" className="font-medium text-primary underline-offset-4 hover:underline">
             Plan your trip
           </Link>
         </div>

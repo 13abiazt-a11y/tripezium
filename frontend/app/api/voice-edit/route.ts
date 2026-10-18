@@ -17,6 +17,7 @@ const MAX_AUDIO_BYTES = 10_000_000
 
 type Context = {
   days: EditableDay[]
+  currency?: string // the trip's home currency: Gemini estimates new activities' costs in it
   activeDay?: number
   travellers?: number
   interests?: string[]
@@ -107,6 +108,7 @@ Rules for edits:
 - Keep items you weren't asked to change exactly as they are (same time, name, localName, category, durationMins, note, tip).
 - New activities must be real, specific places or experiences in that day's city (a named restaurant, museum, market, tour company…), not generic placeholders. Add a short practical tip when it helps.
 - Times are 24-hour "HH:mm", sorted, not overlapping, within the traveller's day start and end, with sensible meal times. Use travel time between activities.
+- Every new item has "cost": a realistic estimate per person in the traveller's currency ("currency"), 0 if free. Keep the cost of unchanged items.
 - Every item has "lat" and "lng": the place's real coordinates (WGS84, 4 decimals), used to put it on a map. Keep the coordinates of unchanged items.
 - category is one or two lowercase words, e.g. food, museum, temple, landmark, nature, shopping, nightlife, art, tour.
 - When a day moves to a different city, set its new "city" and "country" (ISO 3166-1 alpha-2) and replace all its items with a fresh plan for that city that fits the traveller's interests. "Swap city A for city B" applies to every day currently in city A. Days that keep their city repeat the same city and country.
@@ -153,7 +155,8 @@ async function askGemini(
   // Costs aren't something the assistant edits; keep the prompt small.
   const days = context.days.slice(0, 60).map((d) => ({
     ...d,
-    items: d.items.map((i) => ({ ...i, cost: undefined, localCost: undefined, status: undefined })), // dropped by JSON.stringify
+    // Costs as plain numbers in the trip currency; the rest isn't for the assistant.
+    items: d.items.map((i) => ({ ...i, cost: i.cost?.amount, localCost: undefined, status: undefined })),
   }))
   const prompt = `Traveller and itinerary:\n${JSON.stringify({ ...context, days })}\n\nRequest: "${transcript}"`
 
@@ -167,19 +170,20 @@ async function askGemini(
   if ("error" in parsed) return parsed
 
   const intent = parsed.intent === "edit" || parsed.intent === "read" ? parsed.intent : "answer"
-  const changes = intent === "edit" ? cleanChanges(parsed.changes, context.days) : []
+  const currency = /^[A-Z]{3}$/.test(context.currency ?? "") ? context.currency : undefined
+  const changes = intent === "edit" ? cleanChanges(parsed.changes, context.days, currency) : []
   const reply = String(parsed.reply ?? "").trim() || (changes.length ? "Done, I've updated your plan." : "Sorry, I didn't catch that.")
   return { intent, reply, changes }
 }
 
-function cleanChanges(raw: unknown, days: EditableDay[]): DayChange[] {
+function cleanChanges(raw: unknown, days: EditableDay[], currency?: string): DayChange[] {
   if (!Array.isArray(raw)) return []
   const out = new Map<number, DayChange>()
   for (const c of raw as Partial<DayChange>[]) {
     const day = Number(c?.day)
     const base = days[day - 1]
     if (!base || !Array.isArray(c.items)) continue
-    const items = cleanItems(c.items, base.items)
+    const items = cleanItems(c.items, base.items, currency)
     const country = /^[A-Za-z]{2}$/.test(String(c.country ?? "")) ? String(c.country).toUpperCase() : base.country
     out.set(day, { day, city: String(c.city || base.city).trim(), country, items })
   }
